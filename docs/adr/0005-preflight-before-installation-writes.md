@@ -1,0 +1,5 @@
+# Preflight all steps before installation writes
+
+Before `install` writes anything, the tool validates every source, recipe, step, path, and known conflict across the complete manifest and calculates the complete plan. Repeated source references that resolve to the same normalized location are errors, and the diagnostic must identify the duplicate entries and recommend explicit deduplication. In the prototype, a fragment marker identifies a local source by its root folder name and the recipe ID; collisions from different sources are conflicts. A `File` target cannot be shared with another writing step; multiple `File Fragment` steps may target one file when their managed markers are distinct. If preflight fails, the operation stops without writing. This does not imply rollback after an unexpected process or filesystem failure during the write phase.
+
+**Consequences**: predictable validation errors cannot leave a partial installation, while crash recovery remains a later concern and is not simulated by the prototype.

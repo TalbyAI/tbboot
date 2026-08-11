@@ -2,7 +2,26 @@
 
 ### TL;DR
 
-La idea es viable si se define como un **contrato declarativo del entorno del repositorio**, con capacidad de comprobar y reconciliar el estado del equipo anfitrión.
+Todavía no se ha decidido construir una herramienta propia. El siguiente paso es un prototipo comparativo que pruebe el núcleo frente a una composición de herramientas existentes. Solo se construirá un producto diferenciado si demuestra una ventaja clara.
+
+### Validated Prototype Direction
+
+The prototype will use a Windows test repository and compare:
+
+- composition with existing tools plus the smallest necessary integration repository;
+- the proposed declarative model with local sources, recipes, `doctor`, `install --dry-run`, and `install`.
+
+Its source model is deliberately small:
+
+- a source folder contains `source.yaml` and first-level recipe folders;
+- a recipe folder is discovered by the presence of `recipe.yaml`;
+- recipes contain ordered `file` and `file-fragment` steps only;
+- local source references are relative, absolute, or UNC paths without a `file:` prefix;
+- source installation includes all recipes; individual recipe selection, catalogs, Git providers, versions, parameters, command checks, and interactive mode are deferred.
+
+`CONTEXT.md` and the ADRs in `docs/adr/` capture the accepted domain language and safety boundaries. The exploratory recommendations below remain hypotheses until the comparison is complete.
+
+La idea solo se considerará viable como producto propio si la semántica declarativa ofrece una ventaja clara frente a la composición.
 
 El núcleo debería ser:
 
