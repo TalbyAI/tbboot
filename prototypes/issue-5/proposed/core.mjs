@@ -96,6 +96,18 @@ function planFragment(existing, marker, content) {
     : { code: 'fragment-drift' };
 }
 
+function registerTarget(targetWriters, target, kind, details, diagnostics) {
+  const previous = targetWriters.get(target);
+  if (previous && (previous.kind === 'file' || kind === 'file')) {
+    diagnostics.push(diagnostic(
+      'file-target-collision',
+      `${previous.source}, recipe ${previous.recipe}, step ${previous.step} and `
+        + `${details.source}, recipe ${details.recipe}, step ${details.step} share ${target}`,
+    ));
+  }
+  if (!previous || kind === 'file') targetWriters.set(target, { kind, ...details });
+}
+
 async function discoverRecipes(sourceRoot) {
   const entries = await readdir(sourceRoot, { withFileTypes: true });
   const recipes = [];
@@ -119,6 +131,7 @@ export async function planInstall(consumerRoot) {
   const writes = [];
   const fragmentState = new Map();
   const seenFragmentMarkers = new Set();
+  const targetWriters = new Map();
   const manifest = await readYaml(join(consumerPath, 'manifest.yaml'), 'manifest-read', diagnostics);
   if (!manifest) return { writes, diagnostics };
 
@@ -191,6 +204,11 @@ export async function planInstall(consumerRoot) {
           ));
           continue;
         }
+        registerTarget(targetWriters, targetPath, step.type === 'file' ? 'file' : 'file-fragment', {
+          source: sourceRoot,
+          recipe: recipeId,
+          step: stepIndex + 1,
+        }, diagnostics);
         const content = await readInput(inputPath, details, diagnostics);
         if (content === null) continue;
 
@@ -254,6 +272,12 @@ export async function planInstall(consumerRoot) {
           source: sourceRoot,
           recipe: recipeId,
         });
+        if (existing !== undefined && existing !== content) {
+          diagnostics.push(diagnostic(
+            'file-drift',
+            `${sourceRoot}, recipe ${recipeId}, step ${stepIndex + 1}: complete file drift at ${targetPath}`,
+          ));
+        }
       }
     }
   }
