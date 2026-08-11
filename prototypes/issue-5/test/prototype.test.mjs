@@ -16,3 +16,21 @@ test('installs shared and recipe-local complete files', async () => {
   assert.equal(await readFile(consumerRoot + '/docs/project-guide.md', 'utf8'),
     '# Project setup\n\nThis file came from a recipe-local source input.\n');
 });
+
+test('installs distinct managed fragments and is idempotent', async () => {
+  const { consumerRoot } = await fixtureConsumer();
+  await applyInstall(await planInstall(consumerRoot));
+  const first = await readFile(consumerRoot + '/AGENTS.md', 'utf8');
+
+  const secondPlan = await planInstall(consumerRoot);
+  assert.deepEqual(secondPlan.diagnostics, []);
+  assert.ok(secondPlan.writes
+    .filter(({ kind }) => kind === 'file-fragment')
+    .every(({ action }) => action === 'noop'));
+  await applyInstall(secondPlan);
+
+  assert.equal(await readFile(consumerRoot + '/AGENTS.md', 'utf8'), first);
+  assert.match(first, /managed-by: source\/baseline/);
+  assert.match(first, /managed-by: source\/review/);
+  assert.match(first, /Keep this unmanaged text\./);
+});
