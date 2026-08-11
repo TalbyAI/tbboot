@@ -1,8 +1,23 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { fixtureConsumer } from './support.mjs';
 import { applyInstall, planInstall } from '../proposed/core.mjs';
+
+const cliPath = fileURLToPath(new URL('../proposed/cli.mjs', import.meta.url));
+
+function runCli(args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [cliPath, ...args]);
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
 
 async function exists(path) {
   try {
@@ -233,4 +248,51 @@ steps:
   await applyInstall(plan);
   assert.equal(await readFile(consumerRoot + '/AGENTS.md', 'utf8'), original);
   assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
+});
+
+test('doctor reports the plan without writing', async () => {
+  const { consumerRoot } = await fixtureConsumer();
+  const before = await readFile(consumerRoot + '/AGENTS.md', 'utf8');
+  const result = await runCli(['doctor', '--root', consumerRoot]);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /create .*\.editorconfig/);
+  assert.equal(await readFile(consumerRoot + '/AGENTS.md', 'utf8'), before);
+  assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
+});
+
+test('install dry-run reports the plan without writing', async () => {
+  const { consumerRoot } = await fixtureConsumer();
+  const result = await runCli(['install', '--dry-run', '--root', consumerRoot]);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /create .*\.editorconfig/);
+  assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
+});
+
+test('install applies a clean plan', async () => {
+  const { consumerRoot } = await fixtureConsumer();
+  const result = await runCli(['install', '--root', consumerRoot]);
+
+  assert.equal(result.code, 0);
+  assert.equal(await exists(consumerRoot + '/.editorconfig'), true);
+  assert.equal(await exists(consumerRoot + '/docs/project-guide.md'), true);
+});
+
+test('install reports preflight errors without writing', async () => {
+  const { consumerRoot } = await fixtureConsumer();
+  await writeFile(consumerRoot + '/manifest.yaml',
+    'sources:\n  - ../source\n  - ./../source\n');
+  const result = await runCli(['install', '--root', consumerRoot]);
+
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /error \[duplicate-source\]/);
+  assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
+});
+
+test('CLI rejects invalid usage', async () => {
+  const result = await runCli(['doctor']);
+
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /--root/);
 });
