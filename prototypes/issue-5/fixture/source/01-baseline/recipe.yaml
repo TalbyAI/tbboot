@@ -1,0 +1,11 @@
+id: baseline
+steps:
+  - type: file
+    input: ../shared/editorconfig
+    target: .editorconfig
+  - type: file
+    input: files/project-guide.md
+    target: docs/project-guide.md
+  - type: file-fragment
+    input: files/agents-block.md
+    target: AGENTS.md

@@ -1,0 +1,5 @@
+id: review
+steps:
+  - type: file-fragment
+    input: files/review-block.md
+    target: AGENTS.md
