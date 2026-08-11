@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import {
   basename,
   dirname,
@@ -28,6 +28,27 @@ function isInside(root, target) {
 
 function localPath(base, value) {
   return resolve(isAbsolute(value) ? value : join(base, value));
+}
+
+function pathKey(value) {
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
+async function realPathWithMissing(path) {
+  const missing = [];
+  let current = path;
+  while (true) {
+    try {
+      const resolved = await realpath(current);
+      return missing.reduce((result, part) => join(result, part), resolved);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
 }
 
 async function readYaml(path, code, diagnostics) {
@@ -97,7 +118,8 @@ function planFragment(existing, marker, content) {
 }
 
 function registerTarget(targetWriters, target, kind, details, diagnostics) {
-  const previous = targetWriters.get(target);
+  const key = pathKey(target);
+  const previous = targetWriters.get(key);
   if (previous && (previous.kind === 'file' || kind === 'file')) {
     diagnostics.push(diagnostic(
       'file-target-collision',
@@ -105,7 +127,7 @@ function registerTarget(targetWriters, target, kind, details, diagnostics) {
         + `${details.source}, recipe ${details.recipe}, step ${details.step} share ${target}`,
     ));
   }
-  if (!previous || kind === 'file') targetWriters.set(target, { kind, ...details });
+  if (!previous || kind === 'file') targetWriters.set(key, { kind, ...details });
 }
 
 async function discoverRecipes(sourceRoot) {
@@ -132,6 +154,13 @@ export async function planInstall(consumerRoot) {
   const fragmentState = new Map();
   const seenFragmentMarkers = new Set();
   const targetWriters = new Map();
+  let consumerRealPath;
+  try {
+    consumerRealPath = await realpath(consumerPath);
+  } catch (error) {
+    diagnostics.push(diagnostic('manifest-read', `${consumerPath}: ${error.message}`));
+    return { writes, diagnostics };
+  }
   const manifest = await readYaml(join(consumerPath, 'manifest.yaml'), 'manifest-read', diagnostics);
   if (!manifest) return { writes, diagnostics };
 
@@ -152,7 +181,8 @@ export async function planInstall(consumerRoot) {
     }
 
     const sourceRoot = localPath(consumerPath, reference);
-    const previousReference = seenSources.get(sourceRoot);
+    const sourceKey = pathKey(sourceRoot);
+    const previousReference = seenSources.get(sourceKey);
     if (previousReference) {
       diagnostics.push(diagnostic(
         'duplicate-source',
@@ -160,7 +190,15 @@ export async function planInstall(consumerRoot) {
       ));
       continue;
     }
-    seenSources.set(sourceRoot, `source ${sourceIndex + 1} (${reference})`);
+    seenSources.set(sourceKey, `source ${sourceIndex + 1} (${reference})`);
+
+    let sourceRealRoot;
+    try {
+      sourceRealRoot = await realpath(sourceRoot);
+    } catch (error) {
+      diagnostics.push(diagnostic('source-read', `${sourceRoot}: ${error.message}`));
+      continue;
+    }
 
     const source = await readYaml(join(sourceRoot, 'source.yaml'), 'source-read', diagnostics);
     if (!source) continue;
@@ -180,7 +218,13 @@ export async function planInstall(consumerRoot) {
       const steps = Array.isArray(recipe.steps) ? recipe.steps : [];
 
       for (const [stepIndex, step] of steps.entries()) {
-        if (!['file', 'file-fragment'].includes(step?.type)) continue;
+        if (!['file', 'file-fragment'].includes(step?.type)) {
+          diagnostics.push(diagnostic(
+            'unsupported-step',
+            `${sourceRoot}, recipe ${recipeId}, step ${stepIndex + 1}: unsupported step type ${step?.type ?? '<missing>'}`,
+          ));
+          continue;
+        }
         const details = {
           source: sourceRoot,
           recipe: recipeId,
@@ -204,11 +248,43 @@ export async function planInstall(consumerRoot) {
           ));
           continue;
         }
-        registerTarget(targetWriters, targetPath, step.type === 'file' ? 'file' : 'file-fragment', {
+
+        let targetRealPath;
+        try {
+          targetRealPath = await realPathWithMissing(targetPath);
+        } catch (error) {
+          diagnostics.push(diagnostic('target-read', `${targetPath}: ${error.message}`));
+          continue;
+        }
+        if (!isInside(consumerRealPath, targetRealPath)) {
+          diagnostics.push(diagnostic(
+            'target-escape',
+            `${sourceRoot}, recipe ${recipeId}, step ${stepIndex + 1}: target resolves outside consumer root: ${target}`,
+          ));
+          continue;
+        }
+        const targetKey = pathKey(targetRealPath);
+        registerTarget(targetWriters, targetRealPath, step.type === 'file' ? 'file' : 'file-fragment', {
           source: sourceRoot,
           recipe: recipeId,
           step: stepIndex + 1,
         }, diagnostics);
+
+        let inputRealPath;
+        try {
+          inputRealPath = await realpath(inputPath);
+        } catch {
+          const content = await readInput(inputPath, details, diagnostics);
+          if (content === null) continue;
+          inputRealPath = inputPath;
+        }
+        if (!isInside(sourceRealRoot, inputRealPath)) {
+          diagnostics.push(diagnostic(
+            'source-input-escape',
+            `${sourceRoot}, recipe ${recipeId}, step ${stepIndex + 1}: input resolves outside source root: ${input}`,
+          ));
+          continue;
+        }
         const content = await readInput(inputPath, details, diagnostics);
         if (content === null) continue;
 
@@ -222,19 +298,19 @@ export async function planInstall(consumerRoot) {
             continue;
           }
           seenFragmentMarkers.add(marker);
-          if (!fragmentState.has(targetPath)) {
+          if (!fragmentState.has(targetKey)) {
             let existing;
             try {
-              existing = await readFile(targetPath, 'utf8');
+              existing = await readFile(targetRealPath, 'utf8');
             } catch (error) {
               if (error.code !== 'ENOENT') {
                 diagnostics.push(diagnostic('target-read', `${targetPath}: ${error.message}`));
                 continue;
               }
             }
-            fragmentState.set(targetPath, existing);
+            fragmentState.set(targetKey, existing);
           }
-          const state = fragmentState.get(targetPath);
+          const state = fragmentState.get(targetKey);
           const result = planFragment(state, marker, content);
           if (result.code) {
             diagnostics.push(diagnostic(
@@ -243,10 +319,10 @@ export async function planInstall(consumerRoot) {
             ));
             continue;
           }
-          fragmentState.set(targetPath, result.content);
+          fragmentState.set(targetKey, result.content);
           writes.push({
             kind: 'file-fragment',
-            target: targetPath,
+            target: targetRealPath,
             content: result.content,
             action: result.action,
             source: sourceRoot,
@@ -257,16 +333,16 @@ export async function planInstall(consumerRoot) {
 
         let existing;
         try {
-          existing = await readFile(targetPath, 'utf8');
+          existing = await readFile(targetRealPath, 'utf8');
         } catch (error) {
           if (error.code !== 'ENOENT') {
-            diagnostics.push(diagnostic('target-read', `${targetPath}: ${error.message}`));
+            diagnostics.push(diagnostic('target-read', `${targetRealPath}: ${error.message}`));
             continue;
           }
         }
         writes.push({
           kind: 'file',
-          target: targetPath,
+          target: targetRealPath,
           content,
           action: existing === undefined ? 'create' : existing === content ? 'noop' : 'update',
           source: sourceRoot,
@@ -275,7 +351,7 @@ export async function planInstall(consumerRoot) {
         if (existing !== undefined && existing !== content) {
           diagnostics.push(diagnostic(
             'file-drift',
-            `${sourceRoot}, recipe ${recipeId}, step ${stepIndex + 1}: complete file drift at ${targetPath}`,
+            `${sourceRoot}, recipe ${recipeId}, step ${stepIndex + 1}: complete file drift at ${targetRealPath}`,
           ));
         }
       }
@@ -283,7 +359,7 @@ export async function planInstall(consumerRoot) {
   }
 
   for (const write of writes.filter(({ kind }) => kind === 'file-fragment')) {
-    write.content = fragmentState.get(write.target);
+    write.content = fragmentState.get(pathKey(write.target));
   }
 
   return { writes, diagnostics };

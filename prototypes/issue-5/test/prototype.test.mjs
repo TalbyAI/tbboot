@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { fixtureConsumer } from './support.mjs';
@@ -132,13 +132,47 @@ steps:
     target: same.txt
   - type: file
     input: files/project-guide.md
-    target: same.txt
+    target: SAME.TXT
 `);
   const plan = await planInstall(consumerRoot);
 
   assert.ok(plan.diagnostics.some(({ code }) => code === 'file-target-collision'));
   await applyInstall(plan);
   assert.equal(await exists(consumerRoot + '/same.txt'), false);
+});
+
+test('rejects unsupported step types before writing', async () => {
+  const { consumerRoot, root } = await fixtureConsumer();
+  await writeFile(root + '/source/01-baseline/recipe.yaml', `id: baseline
+steps:
+  - type: script
+    command: echo unsafe
+`);
+  const plan = await planInstall(consumerRoot);
+
+  assert.ok(plan.diagnostics.some(({ code }) => code === 'unsupported-step'));
+  await applyInstall(plan);
+  assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
+});
+
+test('rejects target symlinks that escape the consumer root', async (t) => {
+  const { consumerRoot, root } = await fixtureConsumer();
+  const outside = root + '/outside-target';
+  const link = consumerRoot + '/linked';
+  await writeFile(root + '/source/01-baseline/recipe.yaml',
+    baselineRecipe.replace('target: docs/project-guide.md', 'target: linked/outside.md'));
+  await mkdir(outside);
+  try {
+    await symlink(outside, link, 'junction');
+  } catch (error) {
+    t.skip(`junctions unavailable: ${error.code}`);
+    return;
+  }
+  const plan = await planInstall(consumerRoot);
+
+  assert.ok(plan.diagnostics.some(({ code }) => code === 'target-escape'));
+  await applyInstall(plan);
+  assert.equal(await exists(outside + '/outside.md'), false);
 });
 
 test('rejects a complete file and fragment sharing a target', async () => {

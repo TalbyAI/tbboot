@@ -9,6 +9,3 @@
 
 # Built Visual Studio Code Extensions
 *.vsix
-
-# Node dependencies
-**/node_modules/
