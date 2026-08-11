@@ -194,7 +194,6 @@ try {
   $compositionFiles = @(
     Get-ChildItem -LiteralPath (Join-Path $scriptRoot 'composition') -File -Recurse | Where-Object { $_.Extension -eq '.ps1' }
     Get-Item -LiteralPath (Join-Path $scriptRoot 'composition.ps1')
-    Get-Item -LiteralPath (Join-Path $scriptRoot 'run-comparison.ps1')
   )
   $proposedLines = ($proposedFiles | Get-Content | Measure-Object -Line).Lines
   $compositionLines = ($compositionFiles | Get-Content | Measure-Object -Line).Lines
@@ -245,8 +244,8 @@ __ROWS__
 | Measure | Proposed semantics | Composition |
 |---|---:|---:|
 | Setup instructions | 3 (`npm install`, `npm test`, CLI/runner) | 2 (install chezmoi, invoke PowerShell; mise optional) |
-| Non-fixture code files | __PROPOSED_FILES__ | __COMPOSITION_FILES__ |
-| Non-fixture code lines | __PROPOSED_LINES__ | __COMPOSITION_LINES__ |
+| Path implementation files | __PROPOSED_FILES__ | __COMPOSITION_FILES__ |
+| Path implementation lines | __PROPOSED_LINES__ | __COMPOSITION_LINES__ |
 
 ## Verdict
 

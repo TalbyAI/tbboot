@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import {
   basename,
   dirname,
@@ -38,16 +38,28 @@ async function realPathWithMissing(path) {
   const missing = [];
   let current = path;
   while (true) {
+    let stats;
     try {
-      const resolved = await realpath(current);
-      return missing.reduce((result, part) => join(result, part), resolved);
+      stats = await lstat(current);
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       const parent = dirname(current);
       if (parent === current) throw error;
       missing.unshift(basename(current));
       current = parent;
+      continue;
     }
+    if (stats.isSymbolicLink()) {
+      try {
+        const resolved = await realpath(current);
+        return missing.reduce((result, part) => join(result, part), resolved);
+      } catch (error) {
+        error.code = 'ERR_TARGET_SYMLINK';
+        throw error;
+      }
+    }
+    const resolved = await realpath(current);
+    return missing.reduce((result, part) => join(result, part), resolved);
   }
 }
 
@@ -253,7 +265,10 @@ export async function planInstall(consumerRoot) {
         try {
           targetRealPath = await realPathWithMissing(targetPath);
         } catch (error) {
-          diagnostics.push(diagnostic('target-read', `${targetPath}: ${error.message}`));
+          diagnostics.push(diagnostic(
+            error.code === 'ERR_TARGET_SYMLINK' ? 'target-escape' : 'target-read',
+            `${targetPath}: ${error.message}`,
+          ));
           continue;
         }
         if (!isInside(consumerRealPath, targetRealPath)) {

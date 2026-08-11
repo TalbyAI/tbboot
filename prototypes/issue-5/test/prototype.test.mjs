@@ -175,6 +175,24 @@ test('rejects target symlinks that escape the consumer root', async (t) => {
   assert.equal(await exists(outside + '/outside.md'), false);
 });
 
+test('rejects dangling target symlinks before writing', async (t) => {
+  const { consumerRoot, root } = await fixtureConsumer();
+  const link = consumerRoot + '/dangling.md';
+  await writeFile(root + '/source/01-baseline/recipe.yaml',
+    baselineRecipe.replace('target: docs/project-guide.md', 'target: dangling.md'));
+  try {
+    await symlink(root + '/outside/missing.md', link, 'file');
+  } catch (error) {
+    t.skip(`file symlinks unavailable: ${error.code}`);
+    return;
+  }
+  const plan = await planInstall(consumerRoot);
+
+  assert.ok(plan.diagnostics.some(({ code }) => code === 'target-escape'));
+  await applyInstall(plan);
+  assert.equal(await exists(root + '/outside/missing.md'), false);
+});
+
 test('rejects a complete file and fragment sharing a target', async () => {
   const { consumerRoot, root } = await fixtureConsumer();
   await writeFile(root + '/source/01-baseline/recipe.yaml', `id: baseline
