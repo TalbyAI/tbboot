@@ -1,0 +1,14 @@
+{
+  "name": "tbboot-issue-5-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "doctor": "node proposed/cli.mjs doctor",
+    "apply": "node proposed/cli.mjs install",
+    "compare": "powershell -NoProfile -ExecutionPolicy Bypass -File run-comparison.ps1"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  }
+}

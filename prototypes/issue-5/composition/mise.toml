@@ -1,0 +1,8 @@
+[tasks.doctor]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File composition/composition.ps1 -Mode doctor"
+
+[tasks.install]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File composition/composition.ps1 -Mode install"
+
+[tasks.dry-run]
+run = "powershell -NoProfile -ExecutionPolicy Bypass -File composition/composition.ps1 -Mode dry-run"
