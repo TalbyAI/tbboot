@@ -204,11 +204,7 @@ try {
   }) -join "`n"
   $compositionStatus = if ($hasChezmoi) { 'chezmoi detected; composition scenarios exercised' } else { 'chezmoi missing; composition scenarios were not exercised' }
   $compositionCoverage = if ($hasChezmoi) { "$compositionPassed/$($rows.Count) checks passed" } else { 'not exercised (chezmoi missing)' }
-  $verdict = if ($hasChezmoi) {
-    "Keep the project as an integration repository until the measured comparison demonstrates differentiated value beyond the existing tools: proposed checks $proposedPassed/$($rows.Count), composition $compositionCoverage, setup 3 versus 2 instructions, and $($proposedFiles.Count)/$proposedLines versus $($compositionFiles.Count)/$compositionLines non-fixture code files/lines."
-  } else {
-    "Keep the project as an integration repository for now. The proposed path passed $proposedPassed/$($rows.Count) scenario checks with 3 setup instructions and $($proposedFiles.Count)/$proposedLines non-fixture code files/lines; composition coverage is $compositionCoverage with 2 setup instructions and $($compositionFiles.Count)/$compositionLines code files/lines. Re-run with chezmoi before deciding to build a differentiated product."
-  }
+  $verdict = "Prototype closed. Proposed checks: $proposedPassed/$($rows.Count); composition coverage: $compositionCoverage; setup 3 versus 2 instructions; and $($proposedFiles.Count)/$proposedLines versus $($compositionFiles.Count)/$compositionLines non-fixture code files/lines. The fixture covers files, fragments, preflight, drift, conflicts, and idempotence, but not command checks, interactive source selection, catalogs, or dependencies. Product decision: build the differentiated tool in TypeScript on Node.js. Missing chezmoi limits the technical comparison coverage but does not block this product decision based on the final scope."
   $report = @'
 # Issue 5 comparison report
 
