@@ -52,7 +52,7 @@ function Get-FragmentPlan {
       $startIndex = $content.IndexOf($start)
       $endIndex = $content.IndexOf($end, $startIndex + $start.Length)
       $currentBlock = $content.Substring($startIndex, $endIndex + $end.Length - $startIndex)
-      if ($currentBlock -ne $block) { throw "fragment-drift [$marker] $target" }
+      if ($currentBlock -cne $block) { throw "fragment-drift [$marker] $target" }
       $next = $content
       $action = 'noop'
     }

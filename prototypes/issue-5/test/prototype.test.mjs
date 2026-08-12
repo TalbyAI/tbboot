@@ -105,7 +105,7 @@ test('rejects source input escapes before writing', async () => {
   assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
 });
 
-test('rejects target escapes before writing', async () => {
+test('rejects target escapes before writing (Windows absolute path)', async () => {
   const { consumerRoot, root } = await fixtureConsumer();
   await writeFile(root + '/source/01-baseline/recipe.yaml',
     baselineRecipe.replace('target: docs/project-guide.md', 'target: ../outside.md'));
@@ -115,6 +115,7 @@ test('rejects target escapes before writing', async () => {
   await applyInstall(plan);
   assert.equal(await exists(consumerRoot + '/.editorconfig'), false);
 
+  // The prototype is Windows-only; this case preserves Windows absolute-path semantics.
   await writeFile(root + '/source/01-baseline/recipe.yaml',
     baselineRecipe.replace('target: docs/project-guide.md', "target: 'C:\\outside.md'"));
   const absolutePlan = await planInstall(consumerRoot);

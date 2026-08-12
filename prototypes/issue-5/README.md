@@ -23,7 +23,7 @@ The composition path requires the external tools documented in
 
 ### Qué hace
 
-El prototipo de la ISO 5 compara una semántica declarativa local con una
+El prototipo del Issue 5 compara una semántica declarativa local con una
 composición de herramientas existentes. Lee el `manifest.yaml` del
 consumer repository, descubre sus sources y recipes, y genera artifacts:
 `.editorconfig`, `docs/project-guide.md` y dos managed blocks dentro de
@@ -100,7 +100,7 @@ real de esa alternativa.
 
 ### Dictamen de cierre
 
-El prototipo de la ISO 5 se da por concluido. Su comparación cubre el núcleo
+El prototipo del Issue 5 se da por concluido. Su comparación cubre el núcleo
 de archivos, fragmentos, preflight, drift e idempotencia; el producto objetivo
 añadirá capacidades fuera de este experimento, como validación de comandos,
 selección interactiva de sources, catálogos y dependencias.

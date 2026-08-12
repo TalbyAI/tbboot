@@ -27,8 +27,9 @@ producción del repositorio.
 - Nunca aprobar pull requests automáticamente.
 - Nunca escribir directamente sobre la rama `main`.
 - Estas acciones solo se permiten cuando el usuario las solicite explícitamente.
-- Si se necesita hacer un commit mientras la rama actual es `main`, crear primero
-  una rama cuyo nombre se derive del issue o trabajo en curso y hacer allí el
-  commit. Por defecto, crearla sin esperar aprobación para no bloquear el
-  trabajo e informar después del nombre; si el usuario pide revisar el nombre,
-  ofrecérselo para aprobación antes de crearla.
+- Las ramas y commits locales fuera de `main` se permiten cuando forman parte de
+  la tarea solicitada; no crear ramas ni commits para trabajo fuera de ese
+  alcance.
+- Si la tarea solicitada requiere un commit mientras la rama actual es `main`,
+  crear primero una rama cuyo nombre se derive del issue o trabajo en curso y
+  hacer allí el commit.

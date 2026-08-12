@@ -149,30 +149,35 @@ function Run-Scenario {
 
 try {
   $scenarios = @(
-    [pscustomobject]@{ Name = 'source/recipe discovery'; Command = 'install'; Proposed = ''; Composition = ''; ProposedCheck = 'discovery'; CompositionCheck = 'discovery'; Notes = 'Fresh install checks local source and first-level recipe discovery.' },
-    [pscustomobject]@{ Name = 'complete-file creation'; Command = 'install'; Proposed = ''; Composition = ''; ProposedCheck = 'complete-file'; CompositionCheck = 'complete-file'; Notes = 'Checks .editorconfig creation.' },
-    [pscustomobject]@{ Name = 'recipe-local input'; Command = 'install'; Proposed = ''; Composition = ''; ProposedCheck = 'recipe-local'; CompositionCheck = 'recipe-local'; Notes = 'Checks the recipe-local project guide.' },
-    [pscustomobject]@{ Name = 'two managed fragments'; Command = 'install'; Proposed = ''; Composition = ''; ProposedCheck = 'fragments'; CompositionCheck = 'fragments'; Notes = 'Checks both markers and preserved unmanaged text.' },
-    [pscustomobject]@{ Name = 'doctor'; Command = 'doctor'; Proposed = ''; Composition = ''; ProposedCheck = 'readonly'; CompositionCheck = 'readonly'; Notes = 'Read-only plan.' },
-    [pscustomobject]@{ Name = 'dry-run'; Command = 'dry-run'; Proposed = ''; Composition = ''; ProposedCheck = 'readonly'; CompositionCheck = 'readonly'; Notes = 'Read-only install plan.' },
-    [pscustomobject]@{ Name = 'preflight failure'; Command = 'install'; Proposed = 'input-escape'; Composition = ''; ProposedCheck = 'preflight'; CompositionCheck = 'not-applicable'; Notes = 'Proposed path rejects a source-input escape before writing.' },
-    [pscustomobject]@{ Name = 'identical no-op'; Command = 'install'; Proposed = 'second-install'; Composition = 'second-install'; ProposedCheck = 'idempotent'; CompositionCheck = 'idempotent'; Notes = 'Second install must preserve bytes.' },
-    [pscustomobject]@{ Name = 'drift'; Command = 'install'; Proposed = 'complete-drift'; Composition = 'complete-drift'; ProposedCheck = 'drift'; CompositionCheck = 'drift'; Notes = 'Modified complete target must not be overwritten.' },
-    [pscustomobject]@{ Name = 'conflict'; Command = 'install'; Proposed = 'target-conflict'; Composition = 'complete-drift'; ProposedCheck = 'collision'; CompositionCheck = 'drift'; Notes = 'Target collision versus chezmoi changed-target conflict.' },
-    [pscustomobject]@{ Name = 'duplicate source reference'; Command = 'install'; Proposed = 'duplicate-source'; Composition = ''; ProposedCheck = 'duplicate'; CompositionCheck = 'not-applicable'; Notes = 'Composition has no manifest/source-reference equivalent.' },
-    [pscustomobject]@{ Name = 'second install'; Command = 'install'; Proposed = 'second-install'; Composition = 'second-install'; ProposedCheck = 'idempotent'; CompositionCheck = 'idempotent'; Notes = 'Idempotence check.' }
+    [pscustomobject]@{ Name = 'source/recipe discovery'; Command = 'install'; Proposed = ''; Composition = ''; CompositionCoverage = 'unsupported'; ProposedCheck = 'discovery'; CompositionCheck = 'not-applicable'; Notes = 'Proposed path discovers source.yaml and recipe.yaml; the composition adapter has no equivalent.' },
+    [pscustomobject]@{ Name = 'complete-file creation'; Command = 'install'; Proposed = ''; Composition = ''; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'complete-file'; CompositionCheck = 'complete-file'; Notes = 'Composition uses its fixed chezmoi-source; this is adapter-emulated.' },
+    [pscustomobject]@{ Name = 'recipe-local input'; Command = 'install'; Proposed = ''; Composition = ''; CompositionCoverage = 'unsupported'; ProposedCheck = 'recipe-local'; CompositionCheck = 'not-applicable'; Notes = 'The composition adapter does not read recipe-local input from recipe.yaml.' },
+    [pscustomobject]@{ Name = 'two managed fragments'; Command = 'install'; Proposed = ''; Composition = ''; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'fragments'; CompositionCheck = 'fragments'; Notes = 'Composition uses fixed fixtureRoot and fragmentFiles through its fragment adapter.' },
+    [pscustomobject]@{ Name = 'doctor'; Command = 'doctor'; Proposed = ''; Composition = ''; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'readonly'; CompositionCheck = 'readonly'; Notes = 'Read-only plan over the adapter inputs.' },
+    [pscustomobject]@{ Name = 'dry-run'; Command = 'dry-run'; Proposed = ''; Composition = ''; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'readonly'; CompositionCheck = 'readonly'; Notes = 'Read-only install plan over the adapter inputs.' },
+    [pscustomobject]@{ Name = 'preflight failure'; Command = 'install'; Proposed = 'input-escape'; Composition = ''; CompositionCoverage = 'unsupported'; ProposedCheck = 'preflight'; CompositionCheck = 'not-applicable'; Notes = 'The proposed path rejects a source-input escape; the composition adapter has no source-input preflight.' },
+    [pscustomobject]@{ Name = 'identical no-op'; Command = 'install'; Proposed = 'second-install'; Composition = 'second-install'; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'idempotent'; CompositionCheck = 'idempotent'; Notes = 'Second install preserves bytes through the fixed adapter inputs.' },
+    [pscustomobject]@{ Name = 'drift'; Command = 'install'; Proposed = 'complete-drift'; Composition = 'complete-drift'; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'drift'; CompositionCheck = 'drift'; Notes = 'Complete-file drift is checked through the fixed composition adapter.' },
+    [pscustomobject]@{ Name = 'conflict'; Command = 'install'; Proposed = 'target-conflict'; Composition = ''; CompositionCoverage = 'unsupported'; ProposedCheck = 'collision'; CompositionCheck = 'not-applicable'; Notes = 'The proposed path changes recipe.yaml; the composition adapter ignores that input.' },
+    [pscustomobject]@{ Name = 'duplicate source reference'; Command = 'install'; Proposed = 'duplicate-source'; Composition = ''; CompositionCoverage = 'unsupported'; ProposedCheck = 'duplicate'; CompositionCheck = 'not-applicable'; Notes = 'Composition has no manifest/source-reference equivalent.' },
+    [pscustomobject]@{ Name = 'second install'; Command = 'install'; Proposed = 'second-install'; Composition = 'second-install'; CompositionCoverage = 'adapter-emulated'; ProposedCheck = 'idempotent'; CompositionCheck = 'idempotent'; Notes = 'Idempotence check through the fixed adapter inputs.' }
   )
 
   $rows = foreach ($scenario in $scenarios) {
     $proposed = Run-Scenario 'proposed' $scenario.Name $scenario.Command $scenario.Proposed $scenario.ProposedCheck
-    if ($hasChezmoi) {
+    if ($hasChezmoi -and $scenario.CompositionCoverage -eq 'adapter-emulated') {
       $composition = Run-Scenario 'composition' $scenario.Name $scenario.Command $scenario.Composition $scenario.CompositionCheck
-      $compositionText = "exit $($composition.Code)"
+      $compositionText = "adapter-emulated: exit $($composition.Code)"
       $compositionWrites = $composition.Writes
       $compositionDiagnostics = $composition.Diagnostics
       $compositionChecks = $composition.Checks
+    } elseif ($hasChezmoi) {
+      $compositionText = 'unsupported: not exercised (fixed adapter has no equivalent)'
+      $compositionWrites = 'not measured'
+      $compositionDiagnostics = 'not applicable'
+      $compositionChecks = 'not applicable'
     } else {
-      $compositionText = 'not run (chezmoi missing; exit 2)'
+      $compositionText = "$($scenario.CompositionCoverage): not run (chezmoi missing; exit 2)"
       $compositionWrites = 'not measured'
       $compositionDiagnostics = 'prerequisite missing'
       $compositionChecks = 'not exercised'
@@ -198,13 +203,15 @@ try {
   $proposedLines = ($proposedFiles | Get-Content | Measure-Object -Line).Lines
   $compositionLines = ($compositionFiles | Get-Content | Measure-Object -Line).Lines
   $proposedPassed = @($rows | Where-Object { $_.ProposedChecks -eq 'passed' }).Count
+  $compositionScenarios = @($scenarios | Where-Object { $_.CompositionCoverage -eq 'adapter-emulated' })
+  $compositionUnsupported = @($scenarios | Where-Object { $_.CompositionCoverage -eq 'unsupported' }).Count
   $compositionPassed = @($rows | Where-Object { $_.CompositionChecks -eq 'passed' }).Count
   $rowText = ($rows | ForEach-Object {
     "| $($_.Name) | $($_.Composition) | $($_.Proposed) | $($_.Writes) | $($_.Diagnostics) | $($_.Checks) | $($_.Notes) |"
   }) -join "`n"
-  $compositionStatus = if ($hasChezmoi) { 'chezmoi detected; composition scenarios exercised' } else { 'chezmoi missing; composition scenarios were not exercised' }
-  $compositionCoverage = if ($hasChezmoi) { "$compositionPassed/$($rows.Count) checks passed" } else { 'not exercised (chezmoi missing)' }
-  $verdict = "Prototype closed. Proposed checks: $proposedPassed/$($rows.Count); composition coverage: $compositionCoverage; setup 3 versus 2 instructions; and $($proposedFiles.Count)/$proposedLines versus $($compositionFiles.Count)/$compositionLines non-fixture code files/lines. The fixture covers files, fragments, preflight, drift, conflicts, and idempotence, but not command checks, interactive source selection, catalogs, or dependencies. Product decision: build the differentiated tool in TypeScript on Node.js. Missing chezmoi limits the technical comparison coverage but does not block this product decision based on the final scope."
+  $compositionStatus = if ($hasChezmoi) { "chezmoi detected; adapter-emulated scenarios exercised; $compositionUnsupported unsupported because the fixed adapter does not discover source.yaml or recipe.yaml" } else { "chezmoi missing; adapter-emulated scenarios were not exercised; $compositionUnsupported scenarios are unsupported by the fixed adapter" }
+  $compositionCoverage = if ($hasChezmoi) { "$compositionPassed/$($compositionScenarios.Count) adapter-emulated checks passed; $compositionUnsupported unsupported" } else { "not exercised (chezmoi missing); $compositionUnsupported unsupported" }
+  $verdict = "Prototype closed. Proposed checks: $proposedPassed/$($rows.Count); composition coverage: $compositionCoverage; setup 3 versus 2 instructions; and $($proposedFiles.Count)/$proposedLines versus $($compositionFiles.Count)/$compositionLines non-fixture code files/lines. Composition coverage is adapter-emulated from fixed compositionSource, fixtureRoot, and fragmentFiles inputs; no native source.yaml or recipe.yaml discovery is claimed. The fixture covers files, fragments, preflight, drift, conflicts, and idempotence, but not command checks, interactive source selection, catalogs, or dependencies. Product decision: build the differentiated tool in TypeScript on Node.js. Missing chezmoi limits the technical comparison coverage but does not block this product decision based on the final scope."
   $report = @'
 # Issue 5 comparison report
 
@@ -228,6 +235,11 @@ npm run compare
 The proposed path uses `node proposed/cli.mjs`. The composition path uses
 `composition.ps1` with `chezmoi --source ... --destination ... apply` and the
 PowerShell fragment adapter.
+
+Composition rows marked `adapter-emulated` use fixed composition inputs,
+including `compositionSource`, `fixtureRoot`, and `fragmentFiles`. Rows marked
+`unsupported` have no equivalent in this adapter; it does not discover
+`source.yaml` or `recipe.yaml`, so no native composition coverage is claimed.
 
 ## Scenario matrix
 

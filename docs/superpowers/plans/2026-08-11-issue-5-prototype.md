@@ -17,7 +17,9 @@
 - Existing identical files and managed blocks are no-ops; a second installation must not change bytes.
 - Do not implement catalogs, Git providers, recipe selection, versions, parameters, command checks, interactive mode, packages, arbitrary scripts, rollback, or production architecture.
 - Use `node:test` and temporary fixture copies; do not add a test framework or a second runtime dependency.
-- Commit each completed task with the message specified in that task.
+- Do not commit unless the user explicitly authorizes commits for this task.
+  When authorized, commit each completed task with the message specified in
+  that task.
 
 ---
 
@@ -549,18 +551,24 @@ git commit -m "feat: add issue 5 composition comparison"
 
 - [ ] **Step 1: Add the matrix cases.**
 
-For each path, execute source/recipe discovery, complete-file creation,
+For the proposed path, execute source/recipe discovery, complete-file creation,
 recipe-local input, two fragments in one target, doctor, dry-run, preflight
 failure, identical no-op, drift, conflict, duplicate source reference, and a
-second install. Capture exit codes and target snapshots before and after every
-write-capable command.
+second install. For the composition path, classify each scenario as
+`adapter-emulated` when it uses the fixed composition inputs, including
+`compositionSource`, `fixtureRoot`, and `fragmentFiles`, or `unsupported` when
+it requires manifest-driven `source.yaml` or `recipe.yaml` discovery. Do not
+count those composition cases as native coverage. Capture exit codes and target
+snapshots before and after every write-capable command.
 
 - [ ] **Step 2: Generate the report from observed results.**
 
 Write a Markdown table with one row per scenario and columns for composition,
-proposed semantics, writes, diagnostics, and notes. Add a measured comparison
-of setup instructions and non-fixture code. End with a verdict that the
-experiment can be rerun from the documented commands.
+proposed semantics, writes, diagnostics, and notes. Label composition rows as
+`adapter-emulated` or `unsupported`; do not report fixed-input behavior as
+native source or recipe discovery. Add a measured comparison of setup
+instructions and non-fixture code. End with a verdict that the experiment can
+be rerun from the documented commands.
 
 - [ ] **Step 3: Document the Windows run commands.**
 
@@ -584,7 +592,9 @@ Run from the repository root:
 ```powershell
 npm test --prefix prototypes/issue-5
 powershell -NoProfile -ExecutionPolicy Bypass -File prototypes/issue-5/run-comparison.ps1
-git diff --check HEAD~1..HEAD
+git diff --check origin/main...HEAD
+git diff --cached --check
+git diff --check
 git status --short
 ```
 
@@ -593,10 +603,12 @@ paths or records the missing composition prerequisite without claiming that
 path was exercised; `git diff --check` is clean; and only intended prototype,
 documentation, and `AGENTS.md` files are changed.
 
-- [ ] **Step 5: Review and commit the complete prototype.**
+- [ ] **Step 5: Review and optionally commit the complete prototype.**
 
-Run `git diff --stat origin/main..HEAD` and inspect the final report against every
-issue #5 acceptance criterion. Then commit:
+Run `git diff --stat origin/main...HEAD`, `git diff --cached --stat`, and
+`git diff --stat`, then inspect the final report against every issue #5
+acceptance criterion. If the user explicitly authorized commits for this task,
+then commit:
 
 ```powershell
 git add prototypes/issue-5
