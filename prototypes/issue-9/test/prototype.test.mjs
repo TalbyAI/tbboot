@@ -71,6 +71,39 @@ test('rejects YAML and version failures at the earliest gate', () => {
       assert.equal(result.diagnostics[0].path, path, name);
     }
     if (message !== undefined) assert.equal(result.diagnostics[0].message, message, name);
+    for (const field of ['source', 'recipe', 'step']) {
+      assert.equal(field in result.diagnostics[0], false, `${name}: ${field}`);
+    }
+  }
+});
+
+test('preserves supplied context on every early validation gate', () => {
+  const cases = [
+    ['YAML parse', 'schemaVersion: [1\n', 'yaml-parse-error', undefined],
+    ['missing schema version', 'sources: []\n', 'schema-version-missing', '/schemaVersion'],
+    ['unsupported schema version', 'schemaVersion: 2\nsources: []\n',
+      'schema-version-unsupported', '/schemaVersion'],
+  ];
+
+  for (const [name, text, code, path] of cases) {
+    const result = validateDocument({
+      kind: 'manifest',
+      text,
+      document: 'tbboot.yaml',
+      source: 'team-recipes',
+      recipe: 'baseline',
+    });
+
+    assert.equal(result.diagnostics.length, 1, name);
+    assert.deepEqual(result.diagnostics[0], {
+      code,
+      severity: 'error',
+      message: result.diagnostics[0].message,
+      document: 'tbboot.yaml',
+      ...(path === undefined ? {} : { path }),
+      source: 'team-recipes',
+      recipe: 'baseline',
+    }, name);
   }
 });
 
@@ -109,10 +142,10 @@ test('rejects invalid Source-reference variants', async (t) => {
     }, '/sources/0/provider'],
     ['local locator with Git field', 'manifest', 'manifest.yaml', (value) => {
       value.sources[0].locator.repository = 'https://example.com/team/recipes.git';
-    }, '/sources/0/locator/repository'],
+    }, '/sources/0/locator/repository', 'repository'],
     ['unknown nested locator field', 'manifest', 'manifest.yaml', (value) => {
       value.sources[1].locator.pathTypo = 'sources/windows';
-    }, '/sources/1/locator/pathTypo'],
+    }, '/sources/1/locator/pathTypo', 'pathTypo'],
     ['absolute Git path', 'manifest', 'manifest.yaml', (value) => {
       value.sources[1].locator.path = 'C:/sources/windows';
     }, '/sources/1/locator/path'],
@@ -124,16 +157,17 @@ test('rejects invalid Source-reference variants', async (t) => {
     }, '/sources/1/locator/path'],
     ['Git selector containing ref plus from and to', 'manifest', 'manifest.yaml', (value) => {
       Object.assign(value.sources[1].selector, { from: 'v1.0.0', to: 'v2.0.0' });
-    }, ['/sources/1/selector/from', '/sources/1/selector/to', '/sources/1/selector/ref']],
+    }, ['/sources/1/selector/from', '/sources/1/selector/to', '/sources/1/selector/ref'],
+    ['from', 'to', 'ref']],
     ['non-empty local selector', 'manifest', 'manifest.yaml', (value) => {
       value.sources[0].selector = { ref: 'main' };
-    }, '/sources/0/selector/ref'],
+    }, '/sources/0/selector/ref', 'ref'],
     ['malformed empty recipe selection', 'manifest', 'manifest.yaml', (value) => {
       value.sources[0].recipes = [''];
     }, '/sources/0/recipes/0'],
   ];
 
-  for (const [name, kind, document, mutate, path] of cases) {
+  for (const [name, kind, document, mutate, path, unknownField] of cases) {
     await t.test(name, async () => {
       const result = validateDocument({
         kind,
@@ -141,6 +175,12 @@ test('rejects invalid Source-reference variants', async (t) => {
         text: await invalidVariant(document, mutate),
       });
       for (const expectedPath of [path].flat()) assertSchemaFailure(result, expectedPath);
+      if (unknownField !== undefined) {
+        for (const field of [unknownField].flat()) {
+          assert.ok(result.diagnostics.some(({ message }) =>
+            message === `Unknown field: ${field}`), JSON.stringify(result.diagnostics));
+        }
+      }
       if (name === 'local locator with Git field') {
         assert.equal(result.diagnostics.some((diagnostic) =>
           diagnostic.path === '/sources/0/provider'), false);
@@ -151,17 +191,17 @@ test('rejects invalid Source-reference variants', async (t) => {
 
 test('rejects invalid authored-document variants', async (t) => {
   const cases = [
-    ['forbidden Source id', 'source', 'source.yaml', (value) => { value.id = 'source-id'; }, '/id'],
+    ['forbidden Source id', 'source', 'source.yaml', (value) => { value.id = 'source-id'; }, '/id', 'id'],
     ['forbidden document-level selector', 'source', 'source.yaml', (value) => {
       value.selector = { ref: 'main' };
-    }, '/selector'],
+    }, '/selector', 'selector'],
     ['missing dependency alias', 'source', 'source.yaml', (value) => {
       delete value.dependencies[0].name;
     }, '/dependencies/0/name'],
     ['unknown dependency field', 'source', 'source.yaml', (value) => {
       value.dependencies[0].extra = true;
-    }, '/dependencies/0/extra'],
-    ['forbidden Recipe id', 'recipe', 'recipe.yaml', (value) => { value.id = 'recipe-id'; }, '/id'],
+    }, '/dependencies/0/extra', 'extra'],
+    ['forbidden Recipe id', 'recipe', 'recipe.yaml', (value) => { value.id = 'recipe-id'; }, '/id', 'id'],
     ['empty ordered Step list', 'recipe', 'recipe.yaml', (value) => { value.steps = []; }, '/steps'],
     ['missing File target', 'recipe', 'recipe.yaml', (value) => {
       delete value.steps[0].target;
@@ -176,8 +216,9 @@ test('rejects invalid authored-document variants', async (t) => {
       value.steps[0].target = '../outside/target.txt';
     }, '/steps/0/target'],
     ['configurable File Fragment marker', 'recipe', 'recipe.yaml', (value) => {
-      value.steps[1].marker = 'custom-marker';
-    }, '/steps/1/marker'],
+      value.steps[0].type = 'file-fragment';
+      value.steps[0].marker = 'custom-marker';
+    }, '/steps/0/marker', 'marker'],
     ['unsupported Step discriminator', 'recipe', 'recipe.yaml', (value) => {
       value.steps[2].type = 'unsupported';
     }, '/steps/2/type'],
@@ -211,13 +252,13 @@ test('rejects invalid authored-document variants', async (t) => {
     }, '/entries/0/keywords/1'],
     ['forbidden catalog entry ID', 'catalog', 'catalog.yaml', (value) => {
       value.entries[0].id = 'entry-id';
-    }, '/entries/0/id'],
+    }, '/entries/0/id', 'id'],
     ['forbidden catalog Source selection', 'catalog', 'catalog.yaml', (value) => {
       value.entries[0].source.recipes = ['baseline'];
-    }, '/entries/0/source/recipes'],
+    }, '/entries/0/source/recipes', 'recipes'],
   ];
 
-  for (const [name, kind, document, mutate, path] of cases) {
+  for (const [name, kind, document, mutate, path, unknownField] of cases) {
     await t.test(name, async () => {
       const result = validateDocument({
         kind,
@@ -225,6 +266,12 @@ test('rejects invalid authored-document variants', async (t) => {
         text: await invalidVariant(document, mutate),
       });
       for (const expectedPath of [path].flat()) assertSchemaFailure(result, expectedPath);
+      if (unknownField !== undefined) {
+        for (const field of [unknownField].flat()) {
+          assert.ok(result.diagnostics.some(({ message }) =>
+            message === `Unknown field: ${field}`), JSON.stringify(result.diagnostics));
+        }
+      }
     });
   }
 });
@@ -289,7 +336,7 @@ test('rejects invalid generated and local document variants', async (t) => {
     }, '/sources/1/fingerprint'],
     ['reserved selection in lock Source', 'lockfile', 'tbboot.lock.yaml', (value) => {
       value.sources[1].source.recipes = ['baseline'];
-    }, '/sources/1/source/recipes'],
+    }, '/sources/1/source/recipes', 'recipes'],
     ['revision on local effect', 'state', 'state.yaml', (value) => {
       value.effects[0].revision = '8c17f4';
     }, '/effects/0/revision'],
@@ -307,7 +354,7 @@ test('rejects invalid generated and local document variants', async (t) => {
     }, '/effects/2/uninstallSupported'],
     ['unknown effect field', 'state', 'state.yaml', (value) => {
       value.effects[0].content = 'unexpected';
-    }, '/effects/0/content'],
+    }, '/effects/0/content', 'content'],
     ['zero effect step index', 'state', 'state.yaml', (value) => {
       value.effects[0].step = 0;
     }, '/effects/0/step'],
@@ -328,7 +375,7 @@ test('rejects invalid generated and local document variants', async (t) => {
     }, '/sources/1/revision'],
   ];
 
-  for (const [name, kind, document, mutate, path] of cases) {
+  for (const [name, kind, document, mutate, path, unknownField] of cases) {
     await t.test(name, async () => {
       const result = validateDocument({
         kind,
@@ -336,6 +383,12 @@ test('rejects invalid generated and local document variants', async (t) => {
         text: await invalidVariant(document, mutate),
       });
       assertSchemaFailure(result, path);
+      if (unknownField !== undefined) {
+        for (const field of [unknownField].flat()) {
+          assert.ok(result.diagnostics.some(({ message }) =>
+            message === `Unknown field: ${field}`), JSON.stringify(result.diagnostics));
+        }
+      }
     });
   }
 });

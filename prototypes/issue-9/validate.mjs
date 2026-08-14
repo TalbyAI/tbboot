@@ -90,7 +90,10 @@ export function validateDocument({ kind, text, document, source, recipe }) {
       : yamlDocuments.length > 1
         ? 'Expected exactly one YAML document'
         : yamlDocuments[0].errors[0]?.message ?? 'Expected a non-empty YAML document';
-    return { value: undefined, diagnostics: [diagnostic('yaml-parse-error', message, { document })] };
+    return {
+      value: undefined,
+      diagnostics: [diagnostic('yaml-parse-error', message, { document, source, recipe })],
+    };
   }
 
   const value = yamlDocuments[0].toJS();
@@ -99,7 +102,7 @@ export function validateDocument({ kind, text, document, source, recipe }) {
     return { value: undefined, diagnostics: [diagnostic(
       'schema-version-missing',
       'Missing required schemaVersion',
-      { document, path: '/schemaVersion' },
+      { document, path: '/schemaVersion', source, recipe },
     )] };
   }
   if (value.schemaVersion !== 1) {
@@ -112,7 +115,7 @@ export function validateDocument({ kind, text, document, source, recipe }) {
     return { value: undefined, diagnostics: [diagnostic(
       'schema-version-unsupported',
       `Unsupported schemaVersion: ${schemaVersion}`,
-      { document, path: '/schemaVersion' },
+      { document, path: '/schemaVersion', source, recipe },
     )] };
   }
 
