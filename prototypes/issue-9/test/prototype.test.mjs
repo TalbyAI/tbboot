@@ -27,3 +27,33 @@ test('accepts all seven canonical documents', async () => {
     assert.equal(result.value.schemaVersion, 1);
   }
 });
+
+test('rejects YAML and version failures at the earliest gate', () => {
+  const cases = [
+    ['empty input', '', 'yaml-parse-error', undefined, undefined],
+    ['whitespace input', '  \n', 'yaml-parse-error', undefined, undefined],
+    ['syntax error', 'schemaVersion: [1\n', 'yaml-parse-error', undefined, undefined],
+    ['duplicate key', 'schemaVersion: 1\nschemaVersion: 1\n', 'yaml-parse-error', undefined, undefined],
+    ['multiple documents', 'schemaVersion: 1\nsources: []\n---\nschemaVersion: 1\nsources: []\n', 'yaml-parse-error', undefined, undefined],
+    ['missing version', 'sources: []\n', 'schema-version-missing', '/schemaVersion',
+      'Missing required schemaVersion'],
+    ['unsupported numeric version', 'schemaVersion: 2\nsources: []\n', 'schema-version-unsupported',
+      '/schemaVersion', 'Unsupported schemaVersion: 2'],
+    ['unsupported scalar version', 'schemaVersion: one\nsources: []\n', 'schema-version-unsupported',
+      '/schemaVersion', 'Unsupported schemaVersion: "one"'],
+  ];
+
+  for (const [name, text, code, path, message] of cases) {
+    const result = validateDocument({ kind: 'manifest', text, document: 'tbboot.yaml' });
+    assert.equal(result.value, undefined, name);
+    assert.equal(result.diagnostics.length, 1, name);
+    assert.equal(result.diagnostics[0].code, code, name);
+    assert.equal(result.diagnostics[0].document, 'tbboot.yaml', name);
+    if (path === undefined) {
+      assert.equal('path' in result.diagnostics[0], false, name);
+    } else {
+      assert.equal(result.diagnostics[0].path, path, name);
+    }
+    if (message !== undefined) assert.equal(result.diagnostics[0].message, message, name);
+  }
+});
