@@ -1,0 +1,16 @@
+{
+  "name": "tbboot-issue-9-prototype",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.12 <25"
+  },
+  "scripts": {
+    "check": "node --check validate.mjs && node --check test/prototype.test.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "yaml": "^2.8.1"
+  }
+}

@@ -1,0 +1,11 @@
+schemaVersion: 1
+sources:
+  - provider: local
+    locator:
+      path: ../shared-source
+  - provider: git
+    locator:
+      repository: https://example.com/team/recipes.git
+      path: sources/windows
+    selector:
+      ref: main

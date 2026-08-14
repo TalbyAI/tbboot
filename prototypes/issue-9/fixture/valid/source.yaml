@@ -1,0 +1,13 @@
+schemaVersion: 1
+dependencies:
+  - name: shared
+    provider: local
+    locator:
+      path: ../shared-source
+  - name: tools
+    provider: git
+    locator:
+      repository: https://example.com/team/tools.git
+    selector:
+      from: v1.0.0
+      to: v2.0.0
