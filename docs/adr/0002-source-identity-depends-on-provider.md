@@ -1,5 +1,5 @@
 # La identidad del source depende de su proveedor
 
-Los sources pueden proceder de mecanismos con garantías de identidad distintas. Un source Git obtiene su identidad del repositorio y su referencia; un source local o de red puede usar una versión declarada en sus archivos y esa declaración se acepta como fuente de confianza. El modelo debe conservar esta diferencia mediante proveedores de source, empezando el prototipo con carpetas locales y dejando Git para una fase posterior.
+Los Sources pueden proceder de mecanismos con locators distintos, pero comparten una regla de identidad: proveedor más locator normalizado. El selector no forma parte de la identidad. El proveedor local usa la ruta normalizada de la carpeta; Git usa el repositorio y su `path` interno opcional. Cuando el proveedor admite selector, lo resuelve por separado a una Source revision exacta.
 
-**Consecuencias**: no se impone una estrategia universal de identidad antes de conocer los proveedores reales, pero las operaciones de instalación deberán poder informar qué mecanismo y versión resolvieron.
+**Consecuencias**: dos selectores para el mismo locator se refieren al mismo Source y deben resolverse como restricciones compatibles; el lockfile registra por separado el selector solicitado y la revisión resuelta.
