@@ -1,10 +1,10 @@
 # tbboot MVP map
 
-Estado: contrato del MVP cerrado; publicación e investigación técnica pendientes
+Estado: contrato del MVP casi cerrado; esquemas, publicación e investigación técnica pendientes
 Última actualización: 2026-08-14
 Progreso orientativo de definición: **~96%**
 
-Este documento es un mapa de decisiones, no la especificación final ni un plan de implementación. El porcentaje mide el cierre del contrato, no el código construido.
+Este documento es un mapa de decisiones, no la especificación final ni un plan de implementación. El porcentaje mide el avance de definición del contrato, no el código construido.
 
 ## Cómo se calcula el progreso
 
@@ -49,17 +49,10 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 - El Manifest canónico es `tbboot.yaml` en la raíz del repositorio consumidor; `manifest.yaml` pertenece solo al prototipo.
 - Todos los documentos YAML authored o generados declaran `schemaVersion: 1`; una versión desconocida falla antes de escribir.
 - El `Manifest` puede declarar Sources completos directamente.
-- La selección futura de Recipes puede representarse en el esquema, pero el MVP la rechaza explícitamente; no la ignora instalando todo silenciosamente.
-- Si no se solicita selección, un Source instala todas sus Recipes.
+- Cada Source declarado instala todas sus Recipes; la selección de subconjuntos queda fuera del contrato del MVP.
 - Los Source providers iniciales son local y Git.
 - Las dependencias reutilizan la misma forma de declaración de Source que `Manifest.sources`.
 - Las referencias de Source usan una forma estructurada canónica con provider, locator y selector opcional; sus componentes adicionales dependen del provider.
-- El contrato futuro debe permitir seleccionar explícitamente Recipes tanto en el Manifest como en las Source dependencies.
-- En `Manifest` y Source dependencies, `recipes` omitido significa todas; una lista no vacía selecciona solo esas Recipes; una lista vacía es inválida.
-- Una Recipe podrá consumir una Recipe declarada como dependencia de su Source, pero no instalar Sources directamente.
-- Las Source dependencies futuras usarán aliases locales; no se reintroducen IDs globales.
-- Cada Source dependency usa `name` como alias local y comparte la estructura de provider, locator, selector y `recipes` de las referencias del Manifest.
-- Las Recipe dependencies futuras usarán el campo canónico `requires` y referirán una Recipe seleccionada mediante el alias de su Source dependency.
 - `source.yaml` no declara versión ni enumera Recipes.
 - `source.yaml` puede declarar Source dependencies.
 - Las Recipes se descubren solo en carpetas de primer nivel que contengan `recipe.yaml`; no hay descubrimiento recursivo implícito.
@@ -113,15 +106,11 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 
 - Las dependencias pertenecen al Source y son entre Sources completos.
 - Una dependencia puede usar un Source para satisfacer prerrequisitos de Recipes de otro Source.
-- `requires` define el orden de prerrequisitos: `doctor` valida primero las Recipes requeridas e `install` las procesa antes que la Recipe consumidora.
-- `uninstall` recorre en orden inverso el orden efectivo de `install`.
-- Las Recipe dependencies son obligatorias en el MVP; la opcionalidad se aplica solo a Steps.
+- `doctor` e `install` procesan cada Source dependency antes que el Source dependiente; `uninstall` recorre el orden efectivo inverso.
 - La resolución es transitiva y ordenada por dependencias.
-- La misma identidad y resolución se deduplican.
+- Si varias ramas del grafo transitivo convergen en la misma identidad y revisión compatible, el Source se procesa una sola vez. Declarar repetidamente la misma identidad en una lista de Sources es un error de preflight.
 - Los ciclos y conflictos de resolución fallan en preflight.
 - Los catálogos pueden indexar dependencias, pero no son la fuente obligatoria para instalar un Source directo.
-- Una Source dependency puede apuntar explícitamente a una Recipe concreta de otro Source.
-- La dependencia entre Sources debe poder satisfacer prerrequisitos de Recipes de otras Sources; no se limita a reutilizar Sources completos sin relación con el grafo de Recipes.
 
 ### Steps y Custom
 
@@ -180,10 +169,6 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 
 ## Decisiones abiertas
 
-### A. Source y Recipe dependencies
-
-- Futuro no bloqueante: reglas finales de orden y ciclos cuando la selección y las Recipe dependencies dejen de ser solo schema reservado.
-
 ### B. Selector Git
 
 - Validación mediante prototipo de rangos, intersecciones y candidatos máximos en grafos Git divergentes.
@@ -204,7 +189,7 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 - Sources locales y Git con paths internos.
 - Intersección de selectors y conflictos de dependencias.
 - Custom autorizado, no autorizado, opcional y obligatorio.
-- Rechazo explícito de selección efectiva y Recipe dependencies reservadas pero no implementadas.
+- Rechazo explícito de campos de selección de Recipes o Recipe dependencies, que no pertenecen al contrato del MVP.
 - Lockfile, drift, no-op e idempotencia.
 - Salida humana y `--json`.
 
@@ -240,7 +225,7 @@ El siguiente porcentaje es orientativo y pondera por igual las decisiones identi
 - Rollback completo.
 - Instalación de drivers, servicios o componentes que requieran reinicio.
 - Soporte de instalación completo para macOS/Linux.
-- Selección efectiva de Recipes en el MVP, aunque el Manifest pueda reservar su forma.
+- Selección de Recipes y Recipe dependencies.
 - Parametrización de File steps.
 - Generalización de delimitadores de File Fragment steps.
 

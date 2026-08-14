@@ -64,19 +64,14 @@ _Avoid_: installation record.
 
 **Source dependency**:
 A Source's declaration that another Source must also be resolved and installed, using the same Source declaration shape as a Manifest entry.
-It may expose selected Recipes to the dependent Source through a local dependency alias.
 _Avoid_: recipe dependency, catalog dependency, manifest dependency.
-
-**Recipe dependency**:
-A Recipe's declaration that it uses a Recipe exposed by one of its Source dependencies.
-_Avoid_: Source installation, global Recipe ID.
 
 **Installation record**:
 A record of what an installation operation actually installed, including relevant versions and content fingerprints for detecting drift.
 _Avoid_: manifest, log.
 
 **Source provider**:
-A mechanism that locates a source and establishes its identity and version when possible.
+A mechanism that locates a Source, normalizes its identity, and resolves a requested selector to an exact revision when supported.
 _Avoid_: installation provider, catalog.
 
 **Source reference**:
