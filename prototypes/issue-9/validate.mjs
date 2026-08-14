@@ -32,10 +32,17 @@ function diagnostic(code, message, { document, path, source, recipe, step } = {}
 export function validateDocument({ kind, text, document, source, recipe }) {
   const validator = validators[kind];
   if (!validator) throw new TypeError(`Unsupported document kind: ${kind}`);
-  const yamlDocuments = parseAllDocuments(text, { schema: 'core', uniqueKeys: true });
+  const yamlDocuments = parseAllDocuments(text, {
+    schema: 'core',
+    uniqueKeys: true,
+    version: '1.2',
+  });
 
-  if (yamlDocuments.length !== 1 || yamlDocuments[0].errors.length > 0 || yamlDocuments[0].contents === null) {
-    const message = yamlDocuments.length === 0
+  const yaml11Directive = yamlDocuments.some(({ directives }) => directives?.yaml?.version === '1.1');
+  if (yaml11Directive || yamlDocuments.length !== 1 || yamlDocuments[0].errors.length > 0 || yamlDocuments[0].contents === null) {
+    const message = yaml11Directive
+      ? 'YAML 1.1 is not supported'
+      : yamlDocuments.length === 0
       ? 'Expected one non-empty YAML document'
       : yamlDocuments.length > 1
         ? 'Expected exactly one YAML document'
@@ -53,9 +60,15 @@ export function validateDocument({ kind, text, document, source, recipe }) {
     )] };
   }
   if (value.schemaVersion !== 1) {
+    let schemaVersion;
+    try {
+      schemaVersion = JSON.stringify(value.schemaVersion);
+    } catch {
+      schemaVersion = String(value.schemaVersion);
+    }
     return { value: undefined, diagnostics: [diagnostic(
       'schema-version-unsupported',
-      `Unsupported schemaVersion: ${JSON.stringify(value.schemaVersion)}`,
+      `Unsupported schemaVersion: ${schemaVersion}`,
       { document, path: '/schemaVersion' },
     )] };
   }

@@ -57,3 +57,31 @@ test('rejects YAML and version failures at the earliest gate', () => {
     if (message !== undefined) assert.equal(result.diagnostics[0].message, message, name);
   }
 });
+
+test('rejects cyclic schemaVersion without throwing', () => {
+  const result = validateDocument({
+    kind: 'manifest',
+    text: 'schemaVersion: &v\n  self: *v\n',
+    document: 'tbboot.yaml',
+  });
+
+  assert.equal(result.value, undefined);
+  assert.equal(result.diagnostics.length, 1);
+  assert.equal(result.diagnostics[0].code, 'schema-version-unsupported');
+  assert.equal(result.diagnostics[0].document, 'tbboot.yaml');
+  assert.equal(result.diagnostics[0].path, '/schemaVersion');
+});
+
+test('rejects explicit YAML 1.1 directives', () => {
+  const result = validateDocument({
+    kind: 'manifest',
+    text: '%YAML 1.1\n---\nschemaVersion: 1\n',
+    document: 'tbboot.yaml',
+  });
+
+  assert.equal(result.value, undefined);
+  assert.equal(result.diagnostics.length, 1);
+  assert.equal(result.diagnostics[0].code, 'yaml-parse-error');
+  assert.equal(result.diagnostics[0].document, 'tbboot.yaml');
+  assert.equal('path' in result.diagnostics[0], false);
+});
