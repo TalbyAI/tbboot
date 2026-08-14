@@ -108,8 +108,8 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 - Una dependencia puede usar un Source para satisfacer prerrequisitos de Recipes de otro Source.
 - `doctor` e `install` procesan cada Source dependency antes que el Source dependiente; `uninstall` recorre el orden efectivo inverso.
 - La resolución es transitiva y ordenada por dependencias.
-- Si varias ramas del grafo transitivo convergen en la misma identidad y revisión compatible, el Source se procesa una sola vez. Declarar repetidamente la misma identidad en una lista de Sources es un error de preflight.
-- Los ciclos y conflictos de resolución fallan en preflight.
+- Si varias ramas del grafo transitivo convergen en la misma identidad y selectors compatibles, se intersectan y el Source se procesa una sola vez. Repetir en una lista la misma identidad con un selector equivalente es un duplicado; selectors distintos se intersectan y una intersección incompatible falla en preflight.
+- Los ciclos de Source dependencies y los conflictos de resolución fallan en preflight; el diagnóstico de ciclo muestra la ruta completa.
 - Los catálogos pueden indexar dependencias, pero no son la fuente obligatoria para instalar un Source directo.
 
 ### Steps y Custom
@@ -131,7 +131,7 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 - PowerShell 7 y Windows PowerShell 5.1 son runtimes distintos; Windows PowerShell no es un objetivo separado del MVP.
 - Los nombres canónicos son `node`, `pwsh` (PowerShell 7) y `windows-powershell` (Windows PowerShell 5.1); el MVP implementa solo `node` y `pwsh`.
 - Los rangos por defecto del MVP son Node `>=24.12 <25` y PowerShell `>=7.6 <8`.
-- `node` puede ejecutar JavaScript y TypeScript usando únicamente capacidades nativas de la versión detectada; no se instala ni asume un runner auxiliar.
+- `node` ejecuta JavaScript directamente y TypeScript con el type stripping nativo, sin flags ni runner auxiliar. El MVP admite solo sintaxis TypeScript borrable; construcciones como `enum` y parameter properties, que en Node 24 requieren `--experimental-transform-types`, quedan fuera.
 - En el MVP, `File step` y `File Fragment step` son los únicos Steps incorporados; el resto del comportamiento, incluidas las comprobaciones de comandos, usa `Custom step`.
 - El MVP no incluye `package step` ni integración WinGet; las instalaciones Windows declaradas por una Recipe usan `Custom.install` autorizado.
 - Los patrones seguros y repetidos de `Custom step` podrán promoverse posteriormente a Steps específicos.
@@ -149,11 +149,11 @@ Las hipótesis no se cuentan como decisiones cerradas. El porcentaje se actualiz
 - `Ctrl+C` termina el proceso Custom y sus descendientes, detiene el plan sin rollback, conserva lo completado y devuelve código `130`.
 - Las rutas `Custom.script` son relativas a la carpeta de la Recipe; pueden subir a carpetas compartidas dentro de la Source, pero nunca escapar de la raíz de la Source.
 - El drift de `File` y `File Fragment` bloquea escrituras por defecto; `install --force` permite sobrescribir el archivo o reemplazar solo el bloque gestionado, pero no resuelve conflictos estructurales.
-- `install --dry-run` puede ejecutar `check` y construir el plan, pero nunca ejecuta `Custom.install`/`uninstall` ni escribe.
+- `install --dry-run` no ejecuta procesos Custom ni escribe. Valida estáticamente su autorización, runtime y definición, marca sus comprobaciones y acciones como aplazadas y construye el resto del plan.
 - `doctor` es de solo lectura; devuelve código distinto de `0` si falla un requisito obligatorio y `0` si solo existen warnings de Steps opcionales.
 - `doctor`, `install`, `install --dry-run` y `uninstall` ofrecen salida humana por defecto y `--json`; en JSON, stdout contiene un único documento y stderr queda para logs.
 - El envelope JSON común es `{ schemaVersion, command, status, changed, actions, diagnostics }`; los diagnósticos incluyen `code`, `severity`, `message` y contexto disponible.
-- `install` y `install --dry-run` devuelven `0` solo cuando el plan obligatorio es ejecutable; conflictos, errores de preflight, fallos obligatorios o drift sin `--force` devuelven distinto de `0`.
+- `install` devuelve `0` solo cuando completa el plan obligatorio. `install --dry-run` devuelve `0` cuando pasa el preflight estático, aunque avisa de comprobaciones Custom aplazadas; conflictos, errores de preflight, fallos obligatorios observados o drift sin `--force` devuelven distinto de `0`.
 - `uninstall` retira efectos gestionados en orden inverso: elimina Files creados sin drift, conserva Files preexistentes sobrescritos, elimina solo bloques gestionados y ejecuta `Custom.uninstall` cuando existe; no restaura estados previos.
 - El drift bloquea `uninstall`; con `--force` solo puede eliminarse un File creado por tbboot o un bloque gestionado, nunca un File preexistente sobrescrito. Los conflictos estructurales siguen siendo errores.
 - Un `Custom` sin `uninstall` queda intacto, genera warning `uninstall-unsupported` y conserva su entrada en la Installation record; no hace fallar el comando por sí solo.

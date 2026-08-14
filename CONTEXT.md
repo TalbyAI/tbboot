@@ -37,7 +37,7 @@ An ordered operation within a recipe that generates or detects an artifact. Step
 _Avoid_: recipe, script.
 
 **Optional step**:
-A step whose detection, installation, or removal failure produces a non-blocking diagnostic and does not prevent the remaining steps from continuing.
+A step whose detection, installation, removal, or lack of Custom authorization produces a non-blocking diagnostic and does not prevent the remaining steps from continuing. Lack of authorization blocks a required Custom step.
 _Avoid_: best-effort recipe, ignored step.
 
 **Step type**:
@@ -59,7 +59,7 @@ The set of catalogs available to a developer for discovery, independently of the
 _Avoid_: manifest dependency.
 
 **Manifest**:
-A consumer repository's declaration of the sources it intends to install, with optional recipe selections.
+A consumer repository's declaration of the sources it intends to install. Each declared Source is installed completely in the MVP.
 _Avoid_: installation record.
 
 **Source dependency**:
