@@ -29,6 +29,49 @@ function diagnostic(code, message, { document, path, source, recipe, step } = {}
   };
 }
 
+function escapePointerToken(value) {
+  return value.replaceAll('~', '~0').replaceAll('/', '~1');
+}
+
+function errorPath(error) {
+  if (error.keyword === 'additionalProperties') {
+    return `${error.instancePath}/${escapePointerToken(error.params.additionalProperty)}`;
+  }
+  if (error.keyword === 'required') {
+    return `${error.instancePath}/${escapePointerToken(error.params.missingProperty)}`;
+  }
+  if (error.keyword === 'dependencies') {
+    return `${error.instancePath}/${escapePointerToken(error.params.property)}`;
+  }
+  if (error.keyword === 'discriminator') {
+    return `${error.instancePath}/${escapePointerToken(error.params.tag)}`;
+  }
+  if (error.keyword === 'uniqueItems') {
+    return `${error.instancePath}/${error.params.i}`;
+  }
+  return error.instancePath;
+}
+
+function schemaMessage(error) {
+  if (error.keyword === 'additionalProperties') {
+    return `Unknown field: ${error.params.additionalProperty}`;
+  }
+  if (error.keyword === 'discriminator') {
+    return `Unsupported ${error.params.tag}: ${error.params.tagValue}`;
+  }
+  return error.message ?? 'Schema validation failed';
+}
+
+function actionableErrors(errors) {
+  const actionable = errors.filter(({ keyword }) => keyword !== 'oneOf' && keyword !== 'if');
+  return actionable.length > 0 ? actionable : errors;
+}
+
+function stepFromPath(path) {
+  const match = /^\/steps\/(\d+)(?:\/|$)/.exec(path);
+  return match ? Number(match[1]) + 1 : undefined;
+}
+
 export function validateDocument({ kind, text, document, source, recipe }) {
   const validator = validators[kind];
   if (!validator) throw new TypeError(`Unsupported document kind: ${kind}`);
@@ -74,16 +117,19 @@ export function validateDocument({ kind, text, document, source, recipe }) {
   }
 
   const valid = validator(value);
-  return {
-    value: valid ? value : undefined,
-    diagnostics: valid ? [] : validator.errors.map((error) => ({
-      code: 'schema-validation-failed',
-      severity: 'error',
-      message: error.message,
-      ...(document === undefined ? {} : { document }),
-      path: error.instancePath,
-      ...(source === undefined ? {} : { source }),
-      ...(recipe === undefined ? {} : { recipe }),
-    })),
-  };
+  if (!valid) {
+    const diagnostics = actionableErrors(validator.errors).map((error) => {
+      const path = errorPath(error);
+      return diagnostic('schema-validation-failed', schemaMessage(error), {
+        document,
+        path,
+        source,
+        recipe,
+        step: stepFromPath(path),
+      });
+    });
+    return { value: undefined, diagnostics };
+  }
+
+  return { value, diagnostics: [] };
 }
