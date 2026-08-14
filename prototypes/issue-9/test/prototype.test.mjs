@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse, stringify } from 'yaml';
 import { validateDocument } from '../validate.mjs';
@@ -16,6 +16,24 @@ const validDocuments = {
 
 const fixtureUrl = (name) => new URL(`../fixture/valid/${name}`, import.meta.url);
 const fixtureText = (name) => readFile(fixtureUrl(name), 'utf8');
+
+async function fixtureSnapshot() {
+  const names = (await readdir(new URL('../fixture/valid/', import.meta.url))).sort();
+  return Object.fromEntries(await Promise.all(names.map(async (name) => [
+    name,
+    await readFile(fixtureUrl(name)),
+  ])));
+}
+
+async function rejectWithoutFixtureWrites(input) {
+  const before = await fixtureSnapshot();
+  const result = validateDocument(input);
+  const after = await fixtureSnapshot();
+  assert.deepEqual(Object.keys(after), Object.keys(before));
+  for (const name of Object.keys(before)) assert.deepEqual(after[name], before[name], name);
+  assert.ok(result.diagnostics.length > 0);
+  return result;
+}
 
 async function invalidVariant(document, mutate) {
   const value = parse(await fixtureText(document));
@@ -44,7 +62,7 @@ test('accepts all seven canonical documents', async () => {
   }
 });
 
-test('rejects YAML and version failures at the earliest gate', () => {
+test('rejects YAML and version failures at the earliest gate', async () => {
   const cases = [
     ['empty input', '', 'yaml-parse-error', undefined, undefined],
     ['whitespace input', '  \n', 'yaml-parse-error', undefined, undefined],
@@ -60,7 +78,7 @@ test('rejects YAML and version failures at the earliest gate', () => {
   ];
 
   for (const [name, text, code, path, message] of cases) {
-    const result = validateDocument({ kind: 'manifest', text, document: 'tbboot.yaml' });
+    const result = await rejectWithoutFixtureWrites({ kind: 'manifest', text, document: 'tbboot.yaml' });
     assert.equal(result.value, undefined, name);
     assert.equal(result.diagnostics.length, 1, name);
     assert.equal(result.diagnostics[0].code, code, name);
@@ -77,7 +95,7 @@ test('rejects YAML and version failures at the earliest gate', () => {
   }
 });
 
-test('preserves supplied context on every early validation gate', () => {
+test('preserves supplied context on every early validation gate', async () => {
   const cases = [
     ['YAML parse', 'schemaVersion: [1\n', 'yaml-parse-error', undefined],
     ['missing schema version', 'sources: []\n', 'schema-version-missing', '/schemaVersion'],
@@ -86,7 +104,7 @@ test('preserves supplied context on every early validation gate', () => {
   ];
 
   for (const [name, text, code, path] of cases) {
-    const result = validateDocument({
+    const result = await rejectWithoutFixtureWrites({
       kind: 'manifest',
       text,
       document: 'tbboot.yaml',
@@ -107,8 +125,8 @@ test('preserves supplied context on every early validation gate', () => {
   }
 });
 
-test('rejects cyclic schemaVersion without throwing', () => {
-  const result = validateDocument({
+test('rejects cyclic schemaVersion without throwing', async () => {
+  const result = await rejectWithoutFixtureWrites({
     kind: 'manifest',
     text: 'schemaVersion: &v\n  self: *v\n',
     document: 'tbboot.yaml',
@@ -121,8 +139,8 @@ test('rejects cyclic schemaVersion without throwing', () => {
   assert.equal(result.diagnostics[0].path, '/schemaVersion');
 });
 
-test('rejects explicit YAML 1.1 directives', () => {
-  const result = validateDocument({
+test('rejects explicit YAML 1.1 directives', async () => {
+  const result = await rejectWithoutFixtureWrites({
     kind: 'manifest',
     text: '%YAML 1.1\n---\nschemaVersion: 1\n',
     document: 'tbboot.yaml',
@@ -133,6 +151,122 @@ test('rejects explicit YAML 1.1 directives', () => {
   assert.equal(result.diagnostics[0].code, 'yaml-parse-error');
   assert.equal(result.diagnostics[0].document, 'tbboot.yaml');
   assert.equal('path' in result.diagnostics[0], false);
+});
+
+test('distinguishes reserved shapes from unsupported behavior', async () => {
+  const cases = [
+    ['manifest', 'manifest.yaml', (value) => { value.sources[0].recipes = []; },
+      'recipes-empty', '/sources/0/recipes'],
+    ['manifest', 'manifest.yaml', (value) => { value.sources[0].recipes = ['baseline']; },
+      'recipes-not-supported', '/sources/0/recipes'],
+    ['source', 'source.yaml', (value) => { value.dependencies[0].recipes = []; },
+      'recipes-empty', '/dependencies/0/recipes'],
+    ['source', 'source.yaml', (value) => { value.dependencies[0].recipes = ['baseline']; },
+      'recipes-not-supported', '/dependencies/0/recipes'],
+    ['recipe', 'recipe.yaml', (value) => {
+      value.requires = [{ source: 'shared', recipe: 'baseline' }];
+    }, 'requires-not-supported', '/requires'],
+  ];
+
+  for (const [kind, document, mutate, code, path] of cases) {
+    const result = await rejectWithoutFixtureWrites({
+      kind,
+      document,
+      text: await invalidVariant(document, mutate),
+    });
+    assert.deepEqual(result.diagnostics.map(({ code: actual }) => actual), [code]);
+    assert.equal(result.diagnostics[0].path, path);
+  }
+});
+
+test('gives structural precedence over reserved semantics', async () => {
+  const cases = [
+    ['manifest', 'manifest.yaml', (value) => { value.sources[0].recipes = 'baseline'; },
+      '/sources/0/recipes'],
+    ['source', 'source.yaml', (value) => { value.dependencies[0].recipes = ['']; },
+      '/dependencies/0/recipes/0'],
+    ['recipe', 'recipe.yaml', (value) => { value.requires = [{ source: 'shared' }]; },
+      '/requires/0/recipe'],
+  ];
+
+  for (const [kind, document, mutate, path] of cases) {
+    const result = await rejectWithoutFixtureWrites({
+      kind,
+      document,
+      text: await invalidVariant(document, mutate),
+    });
+    assertSchemaFailure(result, path);
+  }
+});
+
+test('accepts omitted reserved fields and empty requirements', async () => {
+  const cases = [
+    ['manifest', 'manifest.yaml', () => {}],
+    ['source', 'source.yaml', () => {}],
+    ['recipe', 'recipe.yaml', (value) => { value.requires = []; }],
+  ];
+
+  for (const [kind, document, mutate] of cases) {
+    const result = validateDocument({
+      kind,
+      document,
+      text: await invalidVariant(document, mutate),
+    });
+    assert.deepEqual(result.diagnostics, [], kind);
+  }
+});
+
+test('preserves supplied context on reserved semantic diagnostics', async () => {
+  const result = await rejectWithoutFixtureWrites({
+    kind: 'manifest',
+    document: 'tbboot.yaml',
+    source: 'team-recipes',
+    recipe: 'baseline',
+    text: await invalidVariant('manifest.yaml', (value) => { value.sources[0].recipes = []; }),
+  });
+
+  assert.deepEqual(result.diagnostics[0], {
+    code: 'recipes-empty',
+    severity: 'error',
+    message: 'recipes must be omitted when no selection is requested',
+    document: 'tbboot.yaml',
+    path: '/sources/0/recipes',
+    source: 'team-recipes',
+    recipe: 'baseline',
+  });
+});
+
+test('uses the complete diagnostic envelope for every stable code', async () => {
+  const cases = [
+    ['yaml-parse-error', 'manifest', 'tbboot.yaml', async () => 'schemaVersion: [', undefined],
+    ['schema-version-missing', 'manifest', 'tbboot.yaml', async () => 'sources: []', '/schemaVersion'],
+    ['schema-version-unsupported', 'manifest', 'tbboot.yaml', async () => 'schemaVersion: 2', '/schemaVersion'],
+    ['schema-validation-failed', 'manifest', 'tbboot.yaml', () => invalidVariant('manifest.yaml',
+      (value) => { value.unexpected = true; }), '/unexpected'],
+    ['recipes-empty', 'manifest', 'tbboot.yaml', () => invalidVariant('manifest.yaml',
+      (value) => { value.sources[0].recipes = []; }), '/sources/0/recipes'],
+    ['recipes-not-supported', 'manifest', 'tbboot.yaml', () => invalidVariant('manifest.yaml',
+      (value) => { value.sources[0].recipes = ['baseline']; }), '/sources/0/recipes'],
+    ['requires-not-supported', 'recipe', 'recipe.yaml', () => invalidVariant('recipe.yaml',
+      (value) => { value.requires = [{ source: 'shared', recipe: 'baseline' }]; }), '/requires'],
+  ];
+
+  for (const [code, kind, document, makeText, path] of cases) {
+    const result = await rejectWithoutFixtureWrites({ kind, document, text: await makeText() });
+    assert.equal(result.diagnostics.length, 1, code);
+    const diagnostic = result.diagnostics[0];
+    assert.equal(diagnostic.code, code);
+    assert.equal(diagnostic.severity, 'error');
+    assert.equal(typeof diagnostic.message, 'string');
+    assert.ok(diagnostic.message.length > 0);
+    assert.equal(diagnostic.document, document);
+    if (path !== undefined) assert.equal(diagnostic.path, path);
+    assert.deepEqual(
+      Object.keys(diagnostic).sort(),
+      ['code', 'severity', 'message', 'document', ...(path === undefined ? [] : ['path'])].sort(),
+      code,
+    );
+  }
 });
 
 test('rejects invalid Source-reference variants', async (t) => {
@@ -169,7 +303,7 @@ test('rejects invalid Source-reference variants', async (t) => {
 
   for (const [name, kind, document, mutate, path, unknownField] of cases) {
     await t.test(name, async () => {
-      const result = validateDocument({
+      const result = await rejectWithoutFixtureWrites({
         kind,
         document,
         text: await invalidVariant(document, mutate),
@@ -260,7 +394,7 @@ test('rejects invalid authored-document variants', async (t) => {
 
   for (const [name, kind, document, mutate, path, unknownField] of cases) {
     await t.test(name, async () => {
-      const result = validateDocument({
+      const result = await rejectWithoutFixtureWrites({
         kind,
         document,
         text: await invalidVariant(document, mutate),
@@ -280,7 +414,7 @@ test('reports unknown fields at their actual nested path', async () => {
   const text = await invalidVariant('manifest.yaml', (value) => {
     value.sources[0].locator.soruces = 'typo';
   });
-  const result = validateDocument({ kind: 'manifest', text, document: 'tbboot.yaml' });
+  const result = await rejectWithoutFixtureWrites({ kind: 'manifest', text, document: 'tbboot.yaml' });
 
   assertSchemaFailure(result, '/sources/0/locator/soruces');
   assert.ok(result.diagnostics.some(({ message }) => message === 'Unknown field: soruces'));
@@ -291,7 +425,7 @@ test('closes the root of every document schema', async () => {
     const text = await invalidVariant(document, (value) => {
       value.unexpected = true;
     });
-    const result = validateDocument({ kind, text, document });
+    const result = await rejectWithoutFixtureWrites({ kind, text, document });
 
     assertSchemaFailure(result, '/unexpected');
     assert.ok(result.diagnostics.some(({ message }) => message === 'Unknown field: unexpected'));
@@ -307,7 +441,7 @@ test('does not leak errors from incompatible union branches', async () => {
   ];
 
   for (const [kind, document, mutate, path, message] of cases) {
-    const result = validateDocument({
+    const result = await rejectWithoutFixtureWrites({
       kind,
       document,
       text: await invalidVariant(document, mutate),
@@ -377,7 +511,7 @@ test('rejects invalid generated and local document variants', async (t) => {
 
   for (const [name, kind, document, mutate, path, unknownField] of cases) {
     await t.test(name, async () => {
-      const result = validateDocument({
+      const result = await rejectWithoutFixtureWrites({
         kind,
         document,
         text: await invalidVariant(document, mutate),
@@ -487,7 +621,7 @@ test('adds available Source Recipe and one-based Step context', async () => {
   const text = await invalidVariant('recipe.yaml', (value) => {
     value.steps[1].target = 42;
   });
-  const result = validateDocument({
+  const result = await rejectWithoutFixtureWrites({
     kind: 'recipe',
     text,
     document: 'recipe.yaml',
@@ -502,8 +636,8 @@ test('adds available Source Recipe and one-based Step context', async () => {
   );
 });
 
-test('omits unavailable context from parse errors', () => {
-  const result = validateDocument({ kind: 'manifest', text: 'schemaVersion: [1\n' });
+test('omits unavailable context from parse errors', async () => {
+  const result = await rejectWithoutFixtureWrites({ kind: 'manifest', text: 'schemaVersion: [1\n' });
   const diagnostic = result.diagnostics[0];
 
   assert.equal(diagnostic.code, 'yaml-parse-error');

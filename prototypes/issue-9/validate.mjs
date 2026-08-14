@@ -72,6 +72,35 @@ function stepFromPath(path) {
   return match ? Number(match[1]) + 1 : undefined;
 }
 
+function reservedDiagnostics(kind, value, context) {
+  const diagnostics = [];
+  const selections = kind === 'manifest'
+    ? value.sources.map((entry, index) => [entry, `/sources/${index}/recipes`])
+    : kind === 'source'
+      ? (value.dependencies ?? []).map((entry, index) => [entry, `/dependencies/${index}/recipes`])
+      : [];
+
+  for (const [entry, path] of selections) {
+    if (!Object.hasOwn(entry, 'recipes')) continue;
+    diagnostics.push(diagnostic(
+      entry.recipes.length === 0 ? 'recipes-empty' : 'recipes-not-supported',
+      entry.recipes.length === 0
+        ? 'recipes must be omitted when no selection is requested'
+        : 'Recipe selection is not supported in the MVP',
+      { ...context, path },
+    ));
+  }
+
+  if (kind === 'recipe' && value.requires?.length > 0) {
+    diagnostics.push(diagnostic(
+      'requires-not-supported',
+      'Recipe requirements are not supported in the MVP',
+      { ...context, path: '/requires' },
+    ));
+  }
+  return diagnostics;
+}
+
 export function validateDocument({ kind, text, document, source, recipe }) {
   const validator = validators[kind];
   if (!validator) throw new TypeError(`Unsupported document kind: ${kind}`);
@@ -134,5 +163,6 @@ export function validateDocument({ kind, text, document, source, recipe }) {
     return { value: undefined, diagnostics };
   }
 
-  return { value, diagnostics: [] };
+  const diagnostics = reservedDiagnostics(kind, value, { document, source, recipe });
+  return { value: diagnostics.length === 0 ? value : undefined, diagnostics };
 }
