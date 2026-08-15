@@ -138,7 +138,11 @@ test('does not wait for a child that handles SIGTERM', async () => {
         timeoutMs: 20,
         ready: 'READY\n',
       }),
-      (error) => error.code === 'ETIMEDOUT',
+      (error) => {
+        assert.equal(error.code, 'ETIMEDOUT');
+        assert.equal(error.timeoutMs, 20);
+        return true;
+      },
     );
     if (process.platform !== 'win32') {
       assert.ok(Date.now() - started < 400);

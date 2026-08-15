@@ -123,7 +123,7 @@ export function runCommand({
     };
     let readySeen = ready === undefined;
     const checkReady = () => {
-      if (readySeen || (stdout.includes(ready) || stderr.includes(ready))) return;
+      if (readySeen || !(stdout.includes(ready) || stderr.includes(ready))) return;
       readySeen = true;
       clearTimeout(readyTimeoutId);
       startTimeout();
