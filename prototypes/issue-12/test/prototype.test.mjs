@@ -43,6 +43,22 @@ test('removes the temporary root when fixture copying fails', async () => {
   await assert.rejects(access(root));
 });
 
+test('preserves copy and cleanup errors when both fail', async () => {
+  const copyError = new Error('copy failed');
+  const cleanupError = new Error('cleanup failed');
+  await assert.rejects(
+    createFixture({
+      copy: async () => { throw copyError; },
+      remove: async () => { throw cleanupError; },
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [copyError, cleanupError]);
+      return true;
+    },
+  );
+});
+
 test('shares the cleanup promise while removal is in flight', async () => {
   const fixture = await createFixture();
   try {
@@ -112,20 +128,53 @@ test('rejects and reaps a child process that exceeds its timeout', async () => {
 
 test('does not wait for a child that handles SIGTERM', async () => {
   const fixture = await createFixture();
-  const started = Date.now();
   try {
+    const started = Date.now();
     await assert.rejects(
       runCommand({
         file: process.execPath,
-        args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm'],
+        args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm', '--hold-after-ready'],
         cwd: fixture.consumerRoot,
         timeoutMs: 20,
+        ready: 'READY\n',
       }),
       (error) => error.code === 'ETIMEDOUT',
     );
     if (process.platform !== 'win32') {
       assert.ok(Date.now() - started < 400);
     }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('starts the timeout after the child readiness marker', async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await runCommand({
+      file: process.execPath,
+      args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm', '--ready-delay', '100'],
+      cwd: fixture.consumerRoot,
+      timeoutMs: 20,
+      ready: 'READY\n',
+      readyTimeoutMs: 200,
+    });
+    assert.equal(result.exitCode, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('does not time out after process exit while stdio is still closing', async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await runCommand({
+      file: process.execPath,
+      args: [cliPath, '--root', fixture.consumerRoot, '--hold-stdout'],
+      cwd: fixture.consumerRoot,
+      timeoutMs: 150,
+    });
+    assert.equal(result.exitCode, 0);
   } finally {
     await fixture.cleanup();
   }

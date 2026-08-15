@@ -93,7 +93,7 @@ Expected: FAIL because `test/prototype.test.mjs` has not been created yet, but n
 - Create: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
-- `createFixture({ copy = cp } = {}) -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory, removes the root if copying fails, and shares one in-flight cleanup promise, retrying after a failed removal.
+- `createFixture({ copy = cp, remove = rm } = {}) -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory, removes the root if copying fails, preserves both copy and cleanup failures in an `AggregateError`, and shares one in-flight cleanup promise, retrying after a failed removal.
 - `snapshotFiles(root) -> Promise<Array<{ path, bytes }>>` recursively records sorted relative file paths and `Buffer` contents.
 
 - [ ] **Step 1: Write the failing lifecycle and snapshot tests.**
@@ -127,6 +127,20 @@ test('removes the temporary root when fixture copying fails', async () => {
     (error) => error === copyError,
   );
   await assert.rejects(access(root));
+});
+
+test('preserves copy and cleanup errors when both fail', async () => {
+  const copyError = new Error('copy failed');
+  const cleanupError = new Error('cleanup failed');
+  await assert.rejects(
+    createFixture({
+      copy: async () => { throw copyError; },
+      remove: async () => { throw cleanupError; },
+    }),
+    (error) => error instanceof AggregateError
+      && error.errors[0] === copyError
+      && error.errors[1] === cleanupError,
+  );
 });
 
 test('snapshots nested file paths and exact bytes deterministically', async () => {
@@ -164,12 +178,16 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = join(here, 'fixture');
 
-export async function createFixture({ copy = cp } = {}) {
+export async function createFixture({ copy = cp, remove = rm } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-12-'));
   try {
     await copy(fixtureRoot, root, { recursive: true });
   } catch (error) {
-    await rm(root, { recursive: true, force: true }).catch(() => {});
+    try {
+      await remove(root, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'fixture copy and cleanup failed');
+    }
     throw error;
   }
   let cleanupPromise;
@@ -179,7 +197,7 @@ export async function createFixture({ copy = cp } = {}) {
     sourceRoot: join(root, 'source'),
     cleanup: () => {
       if (!cleanupPromise) {
-        cleanupPromise = rm(root, { recursive: true, force: true }).catch((error) => {
+        cleanupPromise = remove(root, { recursive: true, force: true }).catch((error) => {
           cleanupPromise = undefined;
           throw error;
         });
@@ -225,7 +243,7 @@ Expected: 2 passing tests and 0 failures.
 - Modify: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
-- `runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell, does not merge streams, and terminates/reaps a child that exceeds the timeout before rejecting with `ETIMEDOUT`; POSIX uses `SIGTERM` then `SIGKILL` after 100 ms, while Windows uses forceful termination.
+- `runCommand({ file, args = [], cwd, env, timeoutMs = 30000, ready, readyTimeoutMs = timeoutMs }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell, does not merge streams, starts the command timeout after an optional readiness marker, tracks process exit separately from stdio closure, and terminates/reaps a child that exceeds the timeout before rejecting with `ETIMEDOUT`; POSIX uses `SIGTERM` then `SIGKILL` after 100 ms, while Windows uses forceful termination.
 - `parseJsonOutput(stdout) -> unknown` parses exactly one non-empty JSON document.
 
 - [ ] **Step 1: Write failing process, JSON, and read-only tests.**
@@ -269,20 +287,53 @@ test('rejects and reaps a child process that exceeds its timeout', async () => {
 
 test('does not wait for a child that handles SIGTERM', async () => {
   const fixture = await createFixture();
-  const started = Date.now();
   try {
+    const started = Date.now();
     await assert.rejects(
       runCommand({
         file: process.execPath,
-        args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm'],
+        args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm', '--hold-after-ready'],
         cwd: fixture.consumerRoot,
         timeoutMs: 20,
+        ready: 'READY\n',
       }),
       (error) => error.code === 'ETIMEDOUT',
     );
     if (process.platform !== 'win32') {
       assert.ok(Date.now() - started < 400);
     }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('starts the timeout after the child readiness marker', async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await runCommand({
+      file: process.execPath,
+      args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm', '--ready-delay', '100'],
+      cwd: fixture.consumerRoot,
+      timeoutMs: 20,
+      ready: 'READY\n',
+      readyTimeoutMs: 200,
+    });
+    assert.equal(result.exitCode, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('does not time out after process exit while stdio is still closing', async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await runCommand({
+      file: process.execPath,
+      args: [cliPath, '--root', fixture.consumerRoot, '--hold-stdout'],
+      cwd: fixture.consumerRoot,
+      timeoutMs: 150,
+    });
+    assert.equal(result.exitCode, 0);
   } finally {
     await fixture.cleanup();
   }
@@ -323,9 +374,23 @@ Append these helpers to `harness.mjs`:
 ```js
 import { spawn } from 'node:child_process';
 
-export function runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) {
+export function runCommand({
+  file,
+  args = [],
+  cwd,
+  env,
+  timeoutMs = 30_000,
+  ready,
+  readyTimeoutMs = timeoutMs,
+}) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new RangeError('timeoutMs must be a positive finite number');
+  }
+  if (!Number.isFinite(readyTimeoutMs) || readyTimeoutMs <= 0) {
+    throw new RangeError('readyTimeoutMs must be a positive finite number');
+  }
+  if (ready !== undefined && (typeof ready !== 'string' || ready.length === 0)) {
+    throw new TypeError('ready must be a non-empty string');
   }
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
@@ -339,41 +404,71 @@ export function runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) {
     let timedOut = false;
     let timeoutError;
     let timeoutId;
+    let readyTimeoutId;
     let forceKillId;
+    let exited = false;
+    let childExitCode;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutId);
+      clearTimeout(readyTimeoutId);
       clearTimeout(forceKillId);
       callback(value);
+    };
+    const startTimeout = () => {
+      if (settled || exited || timeoutId !== undefined) return;
+      timeoutId = setTimeout(() => terminate(timeoutMs), timeoutMs);
+    };
+    const terminate = (limit) => {
+      if (settled || exited || timedOut) return;
+      timedOut = true;
+      timeoutError = Object.assign(
+        new Error(`command timed out after ${limit}ms`),
+        { code: 'ETIMEDOUT', timeoutMs: limit },
+      );
+      clearTimeout(readyTimeoutId);
+      if (process.platform === 'win32') {
+        child.kill();
+      } else {
+        forceKillId = setTimeout(() => child.kill('SIGKILL'), 100);
+        child.kill('SIGTERM');
+      }
+    };
+    let readySeen = ready === undefined;
+    const checkReady = () => {
+      if (readySeen || (stdout.includes(ready) || stderr.includes(ready))) return;
+      readySeen = true;
+      clearTimeout(readyTimeoutId);
+      startTimeout();
     };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout.on('data', checkReady);
+    child.stderr.on('data', (chunk) => { stderr += chunk; checkReady(); });
     child.on('error', (error) => {
       if (!timedOut) finish(reject, error);
+    });
+    child.on('exit', (exitCode) => {
+      exited = true;
+      childExitCode = exitCode;
+      clearTimeout(timeoutId);
+      clearTimeout(readyTimeoutId);
+      clearTimeout(forceKillId);
     });
     child.on('close', (exitCode) => {
       if (timedOut) {
         finish(reject, timeoutError);
       } else {
-        finish(resolve, { exitCode, stdout, stderr });
+        finish(resolve, { exitCode: childExitCode ?? exitCode, stdout, stderr });
       }
     });
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      timeoutError = Object.assign(
-        new Error(`command timed out after ${timeoutMs}ms`),
-        { code: 'ETIMEDOUT', timeoutMs },
-      );
-      if (process.platform === 'win32') {
-        child.kill();
-      } else {
-        child.kill('SIGTERM');
-        forceKillId = setTimeout(() => child.kill('SIGKILL'), 100);
-      }
-    }, timeoutMs);
+    if (readySeen) {
+      startTimeout();
+    } else {
+      readyTimeoutId = setTimeout(() => terminate(readyTimeoutMs), readyTimeoutMs);
+    }
   });
 }
 
@@ -388,6 +483,8 @@ Create the probe CLI:
 
 ```js
 // prototypes/issue-12/test/fixtures/cli.mjs
+import { spawn } from 'node:child_process';
+
 const value = (name, fallback = undefined) => {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1];
@@ -398,15 +495,32 @@ const delay = Number(value('--delay', '0'));
 if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 if (process.argv.includes('--handle-sigterm')) {
   process.on('SIGTERM', () => {});
+  const readyDelay = Number(value('--ready-delay', '0'));
+  if (readyDelay > 0) await new Promise((resolve) => setTimeout(resolve, readyDelay));
+  process.stderr.write('READY\n');
+}
+if (process.argv.includes('--hold-after-ready')) {
   setTimeout(() => process.exit(99), 500);
   await new Promise(() => {});
 }
+if (process.argv.includes('--hold-stdout')) {
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 200)'], {
+    detached: true,
+    stdio: ['ignore', 'inherit', 'ignore'],
+  });
+  holder.unref();
+}
 process.stderr.write('probe stderr\n');
-process.stdout.write(`${JSON.stringify({
+const output = `${JSON.stringify({
   status: 'ok',
   cwdMatchesRoot: process.cwd() === root,
-})}\n`);
-process.exitCode = Number(value('--exit', '0'));
+})}\n`;
+if (process.argv.includes('--hold-stdout')) {
+  process.stdout.write(output, () => process.exit(0));
+} else {
+  process.stdout.write(output);
+  process.exitCode = Number(value('--exit', '0'));
+}
 ```
 
 The test module resolves `cliPath` with `fileURLToPath(new URL('./fixtures/cli.mjs', import.meta.url))` and imports the four helpers from `../harness.mjs`.
