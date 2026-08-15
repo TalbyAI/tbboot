@@ -31,9 +31,9 @@ function pwshArgs({ script, content }) {
   return [...common, '-Command', wrapper];
 }
 
-export function buildInvocation(runtime, { script, content }) {
+export function buildInvocation(runtime, { executable, script, content }) {
   if ((script == null) === (content == null)) throw new TypeError('Provide exactly one handler script or content');
-  if (runtime === 'node') return { file: process.execPath, args: nodeArgs({ script, content }) };
-  if (runtime === 'pwsh') return { file: 'pwsh', args: pwshArgs({ script, content }) };
+  if (runtime === 'node') return { file: executable ?? process.execPath, args: nodeArgs({ script, content }) };
+  if (runtime === 'pwsh') return { file: executable ?? 'pwsh', args: pwshArgs({ script, content }) };
   throw new TypeError(`Unsupported runtime: ${runtime}`);
 }

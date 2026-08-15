@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+export const TERMINATION_TIMEOUT_MS = 5000;
 
 function terminationError(pid, cause) {
   const error = new Error(`Failed to terminate process tree for PID ${pid}`, { cause });
@@ -20,6 +21,7 @@ export async function terminateProcessTree(pid) {
       windowsHide: true,
       shell: false,
       encoding: 'utf8',
+      timeout: TERMINATION_TIMEOUT_MS,
     });
   } catch (cause) {
     throw terminationError(pid, cause);

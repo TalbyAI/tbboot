@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -13,7 +13,8 @@ import {
   parseVersion,
   satisfies,
 } from '../runtime.mjs';
-import { runHandler } from '../runner.mjs';
+import { terminateProcessTree } from '../process-tree.mjs';
+import { MAX_TIMEOUT_MS, runHandler } from '../runner.mjs';
 import { collectChild, isProcessRunning, prototypeRoot, waitFor, waitForFile } from './support.mjs';
 
 const fixture = (name) => join(import.meta.dirname, 'fixtures', name);
@@ -39,6 +40,7 @@ test('classifies compatible, incompatible, missing, and unsupported runtimes', (
 test('detects the real Windows runtime set', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only runtime probes' }, async () => {
   const runtimes = await detectRuntimes();
   assert.equal(runtimes.node.status, 'compatible');
+  assert.ok(runtimes.node.file);
   assert.ok(['compatible', 'incompatible', 'missing'].includes(runtimes.pwsh.status));
   assert.ok(['unsupported', 'missing'].includes(runtimes['windows-powershell'].status));
 });
@@ -96,6 +98,57 @@ test('rejects malformed results and non-zero child exits', async () => {
   );
 });
 
+test('uses the executable selected by runtime detection', async () => {
+  const runtime = await detectRuntime('node');
+  const result = await runHandler({
+    runtime: runtime.name,
+    executable: runtime.file,
+    content: "return { status: 'ok', changed: false, details: { selected: true } };",
+    request: {},
+  });
+  assert.equal(result.result.details.selected, true);
+});
+
+test('rejects timer values outside the supported Node range', async () => {
+  await assert.rejects(
+    runHandler({ runtime: 'node', content: "return { status: 'ok', changed: false };", request: {}, timeoutMs: MAX_TIMEOUT_MS + 1 }),
+    /timeoutMs must be an integer/,
+  );
+});
+
+test('cancels before spawning when the signal is already aborted', async () => {
+  const completedFile = join(tmpdir(), `tbboot-issue-11-aborted-${randomUUID()}.txt`);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    runHandler({ runtime: 'node', script: fixture('cancellable-handler.js'), request: { completedFile }, signal: controller.signal }),
+    (error) => error.code === 'cancelled',
+  );
+  await assert.rejects(access(completedFile), { code: 'ENOENT' });
+});
+
+test('propagates termination failures while the handler is running', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {
+  let childPid;
+  await assert.rejects(
+    runHandler({
+      runtime: 'node',
+      content: 'await new Promise((resolve) => setTimeout(resolve, 5000)); return { status: \'ok\', changed: false };',
+      request: {},
+      timeoutMs: 50,
+      terminate: async (pid) => {
+        childPid = pid;
+        assert.equal(await isProcessRunning(pid), true);
+        await terminateProcessTree(pid);
+        const error = new Error('simulated termination failure');
+        error.code = 'tree-termination-failed';
+        throw error;
+      },
+    }),
+    (error) => error.code === 'tree-termination-failed',
+  );
+  assert.ok(childPid);
+});
+
 test('maps an unavailable executable to spawn-failed with its original code', async () => {
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'Path';
   const originalPath = process.env[pathKey];
@@ -117,8 +170,18 @@ test('timeout kills the root, child, and grandchild', { skip: process.platform =
     runHandler({ runtime: 'node', script: fixture('tree-root.mjs'), request: { pidFile }, timeoutMs: 2000 }),
     (error) => error.code === 'timeout',
   );
+  await waitForFile(pidFile);
   const pids = JSON.parse(await readFile(pidFile, 'utf8'));
   await waitFor(() => Promise.all(pids.map(isProcessRunning)).then((states) => states.every((running) => !running)));
+});
+
+test('driver rejects oversized cancellation delays', async () => {
+  const child = spawn(process.execPath, [
+    'driver.mjs', '--runtime', 'node', '--script', fixture('javascript-handler.js'),
+    '--request', '{}', '--timeout-ms', '1000', '--cancel-after-ms', String(MAX_TIMEOUT_MS + 1),
+  ], { cwd: prototypeRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
+  const result = await collectChild(child);
+  assert.equal(result.code, 2);
 });
 
 test('cancellation exits through one path and leaves completed work', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {

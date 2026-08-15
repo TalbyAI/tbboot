@@ -21,7 +21,8 @@
 - Start runtimes with `shell: false` and argument arrays. Inline PowerShell may
   use `-Command` with source as one argument; do not launch it through an OS
   shell or concatenate an executable command line.
-- On timeout or cancellation, terminate the complete process tree with `taskkill /PID <pid> /T /F` and wait for the child to close.
+- On timeout or cancellation, terminate the complete process tree with bounded
+  `taskkill /PID <pid> /T /F`, then wait a bounded period for the child to close.
 - Manual cancellation exits with code `130`; completed work remains and no rollback action runs.
 - On non-Windows systems and Windows non-x64 hosts, Windows-specific tests
   report `skip` or `unavailable`; they do not emulate Windows process behavior.
@@ -29,7 +30,8 @@
   it does not probe PATH or resolve a different executable. A child-process
   spawn error maps to stable code `spawn-failed` and preserves the underlying
   error code, including `ENOENT`.
-- `timeoutMs` is optional. When omitted, the runner disables its timer; the
+- `timeoutMs` is optional. When omitted, the runner disables its timer; when
+  present it is a safe integer from 1 through `2_147_483_647`; the
   operation layer is responsible for passing the ADR defaults for `check`,
   `install`, or `uninstall`.
 - `npm run check` is incremental: each task extends the script only after the
@@ -51,7 +53,7 @@
 | `prototypes/issue-11/driver.mjs` | Small command-line demonstration with `SIGINT` and deterministic cancellation hook. |
 | `prototypes/issue-11/test/support.mjs` | Temporary paths, child-process helpers, skip predicates, and polling utilities. |
 | `prototypes/issue-11/test/prototype.test.mjs` | Runtime, adapter, protocol, process-tree, and cancellation acceptance tests. |
-| `prototypes/issue-11/test/fixtures/*.js|*.mjs|*.ts|*.ps1` | Handlers and process-tree descendants used by tests and the manual driver run. |
+| `prototypes/issue-11/test/fixtures/` | `*.js`, `*.mjs`, `*.ts`, and `*.ps1` handlers and process-tree descendants used by tests and the manual driver run. |
 | `prototypes/issue-11/README.md` | Prerequisites, commands, protocol, manual Ctrl+C demonstration, and prototype limits. |
 
 The files are deliberately kept flat: this prototype has two runtime adapters, not a general plugin or process abstraction.
@@ -66,8 +68,8 @@ The files are deliberately kept flat: this prototype has two runtime adapters, n
 
 **Interfaces:**
 
-- Produces `RUNTIME_DEFINITIONS`, `parseVersion(text)`, `parseRange(text)`, `satisfies(version, range)`, `classifyRuntime({ name, available, version })`, `detectRuntime(name)`, and `detectRuntimes()`.
-- A runtime classification is `{ name, command, version, status, supported }`, where `status` is one of `compatible`, `incompatible`, `missing`, or `unsupported`; `version` is `null` when unavailable.
+- Produces `RUNTIME_DEFINITIONS`, `parseVersion(text)`, `parseRange(text)`, `satisfies(version, range)`, `classifyRuntime({ name, available, version, file })`, `detectRuntime(name)`, and `detectRuntimes()`.
+- A runtime classification is `{ name, command, file, version, status, supported }`, where `status` is one of `compatible`, `incompatible`, `missing`, or `unsupported`; `file` and `version` are `null` when unavailable.
 - `detectRuntimes()` returns an object with exactly `node`, `pwsh`, and
   `windows-powershell` properties. The hyphenated property is accessed with
   bracket notation and is the public canonical id, not an internal alias.
@@ -195,8 +197,9 @@ export function satisfies(version, rangeText) {
 ```
 
 Implement `classifyRuntime` from the definition table, then let
-`detectRuntime` run the definition’s `versionArgs`, map `ENOENT` to
-`available: false`, and pass probe output through `parseVersion`. Treat an
+`detectRuntime` runs the definition’s `versionArgs`, maps `ENOENT` to
+`available: false`, resolves the first executable selected by PATH with the
+native resolver, and passes probe output through `parseVersion`. Treat an
 installed `windows-powershell` runtime as `unsupported` before any range
 comparison. Implement `detectRuntimes` with `Promise.all` over the three fixed
 names and return the documented property names.
@@ -236,12 +239,13 @@ git commit -m "feat: detect issue 11 runtimes"
 
 **Interfaces:**
 
-- `buildInvocation(runtime, { script, content })` returns `{ file, args }` and requires exactly one of `script` or `content`.
-- `runHandler({ runtime, script, content, request, cwd, timeoutMs, signal })` resolves to `{ result, stdout, stderr, exitCode }` or rejects with an error whose stable `code` is `invalid-result`, `child-exit`, `spawn-failed`, `timeout`, `cancelled`, or `tree-termination-failed`.
+- `buildInvocation(runtime, { executable, script, content })` returns `{ file, args }` and requires exactly one of `script` or `content`.
+- `runHandler({ runtime, executable, script, content, request, cwd, timeoutMs, signal })` resolves to `{ result, stdout, stderr, exitCode }` or rejects with an error whose stable `code` is `invalid-result`, `child-exit`, `spawn-failed`, `timeout`, `cancelled`, or `tree-termination-failed`.
 - `runtime` is the canonical id selected by a prior compatible runtime
-  detection; `runHandler` does not re-probe PATH. `timeoutMs` may be omitted,
-  which disables the runner timer; when present it must be a positive finite
-  number.
+  detection; detection also returns the selected executable as `file`, which
+  the caller passes through to `runHandler`; `runHandler` does not re-probe
+  PATH. `timeoutMs` may be omitted, which disables the runner timer; when
+  present it must be a safe integer from 1 through `2_147_483_647`.
 - `runner.mjs` keeps `waitForClose(child)`, `validateResult(value)`, and `runnerError(code, details)` private to the module.
 - Node external handlers export `default async function handler(request)`; Node inline content is the function body wrapped by the adapter.
 - A PowerShell external `.ps1` handler invoked with `-File` reads stdin and
@@ -354,6 +358,21 @@ test('rejects malformed results and non-zero child exits', async () => {
     (error) => error.code === 'child-exit' && error.exitCode === 7,
   );
 });
+
+test('maps an unavailable executable to spawn-failed with its original code', async () => {
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'Path';
+  const originalPath = process.env[pathKey];
+  process.env[pathKey] = '';
+  try {
+    await assert.rejects(
+      runHandler({ runtime: 'pwsh', content: 'return', request: {} }),
+      (error) => error.code === 'spawn-failed' && error.cause?.code === 'ENOENT',
+    );
+  } finally {
+    if (originalPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = originalPath;
+  }
+});
 ```
 
 Run:
@@ -366,17 +385,22 @@ Expected: FAIL because the adapter and runner do not exist.
 
 - [ ] **Step 2: Implement direct invocation builders and extend the incremental check.**
 
-In `adapters.mjs`, build Node invocations with `process.execPath`, `--input-type=module`, and a bootstrap that reads stdin, imports either a file URL or a `data:` URL, calls the default handler, and writes `JSON.stringify(result)` once. For inline Node content, wrap it exactly as `export default async function handler(request) { <content> }`; do not pass any type-transform or TypeScript runner flag.
+In `adapters.mjs`, build Node invocations with the executable selected by
+runtime detection, `--input-type=module`, and a bootstrap that reads stdin,
+imports either a file URL or a `data:` URL, calls the default handler, and
+writes `JSON.stringify(result)` once. For inline Node content, wrap it exactly
+as `export default async function handler(request) { <content> }`; do not pass
+any type-transform or TypeScript runner flag.
 
 Build PowerShell invocations with executable `pwsh`, `-NoLogo`, `-NoProfile`, `-NonInteractive`, and either `-File <script>` or `-Command <wrapper>`. An external `-File` script parses stdin itself; the inline wrapper reads stdin, assigns `$Request`, evaluates the supplied handler body, and leaves stdout solely to the handler result. Use argument arrays and `spawn` with `shell: false`; the inline `-Command` value is PowerShell source passed as one argv element, not an OS shell launch. Never concatenate an executable command line.
 
 Keep the adapter seam this small:
 
 ```js
-export function buildInvocation(runtime, { script, content }) {
+export function buildInvocation(runtime, { executable, script, content }) {
   if ((script == null) === (content == null)) throw new TypeError('Provide exactly one handler script or content');
-  if (runtime === 'node') return { file: process.execPath, args: nodeArgs({ script, content }) };
-  if (runtime === 'pwsh') return { file: 'pwsh', args: pwshArgs({ script, content }) };
+  if (runtime === 'node') return { file: executable ?? process.execPath, args: nodeArgs({ script, content }) };
+  if (runtime === 'pwsh') return { file: executable ?? 'pwsh', args: pwshArgs({ script, content }) };
   throw new TypeError(`Unsupported runtime: ${runtime}`);
 }
 ```
@@ -400,7 +424,7 @@ In `runner.mjs`, spawn the invocation with `stdio: ['pipe', 'pipe', 'pipe']`, wr
 The core lifecycle should have this shape before timeout support is added:
 
 ```js
-const { file, args } = buildInvocation(runtime, { script, content });
+const { file, args } = buildInvocation(runtime, { executable, script, content });
 const child = spawn(file, args, {
   cwd, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
 });
@@ -449,8 +473,8 @@ git commit -m "feat: run issue 11 handler protocols"
 
 **Interfaces:**
 
-- `terminateProcessTree(pid)` runs `taskkill.exe /PID <pid> /T /F` on Windows, waits for that command, and resolves only after the tree-kill request completes.
-- `runHandler` invokes `terminateProcessTree` once on timeout or `AbortSignal` cancellation, then waits for the spawned child’s `close` event before rejecting.
+- `terminateProcessTree(pid)` runs `taskkill.exe /PID <pid> /T /F` on Windows with a 5-second command timeout, waits for that command, and resolves only after the tree-kill request completes.
+- `runHandler` invokes `terminateProcessTree` once on timeout or `AbortSignal` cancellation, propagates termination failures while the child is running, then waits up to 5 seconds for the spawned child’s `close` event before rejecting.
 - Timeout errors have `code: 'timeout'`; cancellation errors have `code: 'cancelled'`; failure to issue or complete the tree termination has `code: 'tree-termination-failed'`.
 
 - [ ] **Step 1: Add the Windows process-tree fixture and failing test.**
@@ -531,7 +555,12 @@ const execFileAsync = promisify(execFile);
 export async function waitForFile(path, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try { await access(path); return; } catch {}
+    try {
+      await access(path);
+      return;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     await delay(25);
   }
   throw new Error(`Timed out waiting for ${path}`);
@@ -547,21 +576,18 @@ export async function waitFor(predicate, timeoutMs = 2000) {
 }
 
 export async function isProcessRunning(pid) {
-  try {
-    const { stdout } = await execFileAsync('tasklist.exe', ['/FI', `PID eq ${pid}`], {
-      windowsHide: true,
-      shell: false,
-      encoding: 'utf8',
-    });
-    return stdout.includes(String(pid));
-  } catch {
-    return false;
-  }
+  const { stdout } = await execFileAsync('tasklist.exe', ['/FI', `PID eq ${pid}`], {
+    windowsHide: true,
+    shell: false,
+    encoding: 'utf8',
+  });
+  return stdout.includes(String(pid));
 }
 ```
 
-`waitForFile` throws after its deadline and `isProcessRunning` returns `false`
-for a missing process. Add these imports, without repeating the `join` and
+`waitForFile` retries only while the file is absent; unexpected filesystem
+errors propagate. `isProcessRunning` returns `false` only after a successful
+`tasklist.exe` query confirms the PID is absent. Add these imports, without repeating the `join` and
 `runHandler` imports already added in Task 2, and add the test:
 
 ```js
@@ -598,10 +624,16 @@ In `process-tree.mjs`, reject with `tree-termination-failed` when
 await execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
   windowsHide: true,
   shell: false,
+  timeout: 5000,
 });
 ```
 
-Capture command failures in an error that includes the PID and original stderr.
+Bound the `taskkill.exe` command at 5 seconds and capture command failures in
+an error that includes the PID and original stderr. After termination succeeds,
+the runner waits at most another 5 seconds for the child `close` event. A
+termination-command failure remains `tree-termination-failed`; if termination
+succeeds but the close deadline expires, preserve the requested `timeout` or
+`cancelled` reason and attach the close failure as its cause.
 Do not fall back to `child.kill()`, enumerate descendants manually, or add a
 Unix implementation; the prototype’s contract is Windows x64.
 
@@ -615,12 +647,17 @@ Extend `package.json` so `scripts.check` now includes
 - [ ] **Step 3: Wire timeout and cancellation into the runner.**
 
 If `timeoutMs` is provided, start one timer when the child is spawned. When it
-is omitted, do not start a timer. On timer expiry, set the reason to `timeout`;
-on `signal.abort`, set it to `cancelled`. Both paths call one idempotent
-`stop(reason)` function that awaits `terminateProcessTree(child.pid)`.
-The `close` listener remains active until the child exits. After close, reject
-with the recorded reason and never parse a partial stdout buffer. Clear the
-timer and remove the abort listener on every completion path.
+is omitted, do not start a timer. Reject non-safe or out-of-range values before
+spawning. Before spawning, an already-aborted signal rejects as `cancelled`;
+after attaching the listener, check `signal.aborted` again and route it through
+the same idempotent `stop(reason)` function. On timer expiry, set the reason to
+`timeout`; on `signal.abort`, set it to `cancelled`. Both paths await
+`terminateProcessTree(child.pid)`. Monitor the termination promise while
+waiting for the child so a later termination failure is propagated immediately.
+The `close` listener remains active until the child exits, with a 5-second
+post-termination deadline. After close, reject with the recorded reason and
+never parse a partial stdout buffer. Clear the timer and remove the abort
+listener on every completion path.
 
 - [ ] **Step 4: Add deterministic cancellation/no-rollback coverage.**
 

@@ -10,7 +10,12 @@ const execFileAsync = promisify(execFile);
 export async function waitForFile(path, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try { await access(path); return; } catch {}
+    try {
+      await access(path);
+      return;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     await delay(25);
   }
   throw new Error(`Timed out waiting for ${path}`);
@@ -26,16 +31,12 @@ export async function waitFor(predicate, timeoutMs = 2000) {
 }
 
 export async function isProcessRunning(pid) {
-  try {
-    const { stdout } = await execFileAsync('tasklist.exe', ['/FI', `PID eq ${pid}`], {
-      windowsHide: true,
-      shell: false,
-      encoding: 'utf8',
-    });
-    return stdout.includes(String(pid));
-  } catch {
-    return false;
-  }
+  const { stdout } = await execFileAsync('tasklist.exe', ['/FI', `PID eq ${pid}`], {
+    windowsHide: true,
+    shell: false,
+    encoding: 'utf8',
+  });
+  return stdout.includes(String(pid));
 }
 
 export const prototypeRoot = dirname(dirname(fileURLToPath(import.meta.url)));

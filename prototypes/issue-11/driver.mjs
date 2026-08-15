@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { runHandler } from './runner.mjs';
+import { detectRuntime } from './runtime.mjs';
+import { MAX_TIMEOUT_MS, runHandler } from './runner.mjs';
 
 const valueFlags = new Map([
   ['--runtime', 'runtime'],
@@ -12,8 +13,11 @@ const valueFlags = new Map([
 ]);
 
 function positiveInteger(value, flag) {
-  if (!/^\d+$/.test(value) || Number(value) <= 0) throw new Error(`${flag} must be a positive integer`);
-  return Number(value);
+  const parsed = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_TIMEOUT_MS) {
+    throw new Error(`${flag} must be an integer from 1 through ${MAX_TIMEOUT_MS}`);
+  }
+  return parsed;
 }
 
 function parseArgs(argv) {
@@ -70,8 +74,11 @@ async function main(argv) {
   }
 
   try {
+    const detected = await detectRuntime(options.runtime);
+    if (!detected.supported) throw new Error(`${options.runtime} is not a compatible runtime`);
     const outcome = await runHandler({
       runtime: options.runtime,
+      executable: detected.file,
       script: options.script,
       request: options.request,
       timeoutMs: options.timeoutMs,

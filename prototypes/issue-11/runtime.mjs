@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const executableResolver = process.platform === 'win32' ? 'where.exe' : 'which';
 const VERSION_RE = /(\d+)\.(\d+)(?:\.(\d+))?/;
 const RANGE_RE = /^>=(\d+\.\d+(?:\.\d+)?)\s+<(\d+(?:\.\d+){0,2})$/;
 
@@ -39,7 +40,7 @@ export function satisfies(version, rangeText) {
   return compare(version, range.lower) >= 0 && compare(version, range.upper) < 0;
 }
 
-export function classifyRuntime({ name, available, version }) {
+export function classifyRuntime({ name, available, version, file = null }) {
   const definition = RUNTIME_DEFINITIONS[name];
   if (!definition) throw new TypeError(`Unknown runtime: ${name}`);
 
@@ -54,31 +55,42 @@ export function classifyRuntime({ name, available, version }) {
   return {
     name,
     command: definition.command,
+    file: available ? file : null,
     version: available ? parsedVersion : null,
     status,
     supported: status === 'compatible',
   };
 }
 
+async function resolveExecutable(command) {
+  const { stdout } = await execFileAsync(executableResolver, [command], {
+    encoding: 'utf8',
+    windowsHide: true,
+    shell: false,
+  });
+  const file = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  if (!file) throw new Error(`Could not resolve executable: ${command}`);
+  return file;
+}
+
 export async function detectRuntime(name) {
   const definition = RUNTIME_DEFINITIONS[name];
   if (!definition) throw new TypeError(`Unknown runtime: ${name}`);
 
+  let versionText = '';
   try {
     const { stdout } = await execFileAsync(definition.command, definition.versionArgs, {
       encoding: 'utf8',
       windowsHide: true,
       shell: false,
     });
-    return classifyRuntime({ name, available: true, version: parseVersion(stdout) });
+    versionText = stdout;
   } catch (error) {
     if (error.code === 'ENOENT') return classifyRuntime({ name, available: false, version: null });
-    return classifyRuntime({
-      name,
-      available: true,
-      version: parseVersion(error.stdout ?? ''),
-    });
+    versionText = error.stdout ?? '';
   }
+  const file = await resolveExecutable(definition.command);
+  return classifyRuntime({ name, available: true, version: parseVersion(versionText), file });
 }
 
 export async function detectRuntimes() {

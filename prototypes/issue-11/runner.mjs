@@ -2,6 +2,9 @@ import { spawn } from 'node:child_process';
 import { buildInvocation } from './adapters.mjs';
 import { terminateProcessTree } from './process-tree.mjs';
 
+export const MAX_TIMEOUT_MS = 2_147_483_647;
+const CLOSE_TIMEOUT_MS = 5000;
+
 function runnerError(code, details = {}) {
   const error = new Error(details.message ?? code, { cause: details.cause });
   error.code = code;
@@ -34,14 +37,23 @@ function validateResult(value) {
   return value;
 }
 
-export async function runHandler({ runtime, script, content, request, cwd, timeoutMs, signal }) {
-  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new TypeError('timeoutMs must be a positive finite number');
+function withTimeout(promise, timeoutMs) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Child did not close after termination')), timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+export async function runHandler({ runtime, executable, script, content, request, cwd, timeoutMs, signal, terminate = terminateProcessTree }) {
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS)) {
+    throw new TypeError(`timeoutMs must be an integer from 1 through ${MAX_TIMEOUT_MS}`);
   }
+  if (signal?.aborted) throw runnerError('cancelled');
   const requestJson = JSON.stringify(request);
   if (requestJson === undefined) throw new TypeError('request must be JSON serializable');
 
-  const { file, args } = buildInvocation(runtime, { script, content });
+  const { file, args } = buildInvocation(runtime, { executable, script, content });
   let child;
   try {
     child = spawn(file, args, {
@@ -58,18 +70,24 @@ export async function runHandler({ runtime, script, content, request, cwd, timeo
   const outcomePromise = waitForClose(child);
   let reason;
   let stopPromise;
+  let notifyStop;
+  const stopNotification = new Promise((resolve) => { notifyStop = resolve; });
   let timer;
   const stop = (nextReason) => {
     if (reason) return stopPromise;
     reason = nextReason;
-    stopPromise = terminateProcessTree(child.pid);
+    stopPromise = Promise.resolve().then(() => terminate(child.pid));
+    stopPromise.then(
+      () => notifyStop({ ok: true }),
+      (error) => notifyStop({ ok: false, error }),
+    );
     void stopPromise.catch(() => {});
     return stopPromise;
   };
   const onAbort = () => { void stop('cancelled'); };
   if (signal) {
+    signal.addEventListener('abort', onAbort, { once: true });
     if (signal.aborted) onAbort();
-    else signal.addEventListener('abort', onAbort, { once: true });
   }
   if (timeoutMs !== undefined) timer = setTimeout(() => { void stop('timeout'); }, timeoutMs);
   child.stdin.end(requestJson);
@@ -80,25 +98,21 @@ export async function runHandler({ runtime, script, content, request, cwd, timeo
   };
 
   try {
+    const first = await Promise.race([
+      outcomePromise.then((value) => ({ type: 'close', value })),
+      stopNotification.then((value) => ({ type: 'termination', value })),
+    ]);
     let outcome;
-    if (stopPromise) {
-      const terminationResult = stopPromise.then(
-        () => ({ ok: true }),
-        (error) => ({ ok: false, error }),
-      );
-      const first = await Promise.race([
-        outcomePromise.then((value) => ({ type: 'close', value })),
-        terminationResult.then((value) => ({ type: 'termination', value })),
-      ]);
-      if (first.type === 'termination' && !first.value.ok) {
-        cleanup();
-        throw first.value.error;
+    if (first.type === 'termination') {
+      if (!first.value.ok) throw first.value.error;
+      try {
+        outcome = await withTimeout(outcomePromise, CLOSE_TIMEOUT_MS);
+      } catch (cause) {
+        throw runnerError(reason, { cause });
       }
-      outcome = first.type === 'close' ? first.value : await outcomePromise;
-      const completedTermination = await terminationResult;
-      if (!completedTermination.ok) throw completedTermination.error;
     } else {
-      outcome = await outcomePromise;
+      outcome = first.value;
+      if (stopPromise) await stopPromise;
     }
     cleanup();
     if (stopPromise) {
