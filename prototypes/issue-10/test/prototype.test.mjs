@@ -32,3 +32,19 @@ test('rejects a missing ref', () => withFixture(({ repoPath }) => {
     (error) => error instanceof GitSelectorError && error.code === 'git-ref-not-found',
   );
 }));
+
+test('resolves inclusive ranges and equal bounds by ancestry', () => withFixture(({ repoPath, revisions }) => {
+  assert.equal(resolveSelector(repoPath, { from: 'v1', to: 'v2' }).revision, revisions.x);
+  assert.equal(resolveSelector(repoPath, { from: 'v2', to: 'v2' }).revision, revisions.x);
+  assert.equal(
+    resolveSelector(repoPath, { from: 'refs/tags/v1', to: 'refs/heads/line-x' }).revision,
+    revisions.x,
+  );
+}));
+
+test('rejects a range whose lower bound is not an ancestor', () => withFixture(({ repoPath }) => {
+  assert.throws(
+    () => resolveSelector(repoPath, { from: 'v2', to: 'v1' }),
+    (error) => error instanceof GitSelectorError && error.code === 'git-range-invalid',
+  );
+}));
