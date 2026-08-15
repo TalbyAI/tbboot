@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { buildInvocation } from './adapters.mjs';
+import { terminateProcessTree } from './process-tree.mjs';
 
 function runnerError(code, details = {}) {
   const error = new Error(details.message ?? code, { cause: details.cause });
@@ -55,25 +56,55 @@ export async function runHandler({ runtime, script, content, request, cwd, timeo
 
   child.stdin.on('error', () => {});
   const outcomePromise = waitForClose(child);
+  let reason;
+  let stopPromise;
+  let timer;
+  const stop = (nextReason) => {
+    if (reason) return stopPromise;
+    reason = nextReason;
+    stopPromise = terminateProcessTree(child.pid);
+    void stopPromise.catch(() => {});
+    return stopPromise;
+  };
+  const onAbort = () => { void stop('cancelled'); };
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+  if (timeoutMs !== undefined) timer = setTimeout(() => { void stop('timeout'); }, timeoutMs);
   child.stdin.end(requestJson);
-  const outcome = await outcomePromise;
 
-  if (outcome.spawnError) {
-    throw runnerError('spawn-failed', {
-      cause: outcome.spawnError,
-      originalCode: outcome.spawnError.code,
-      ...outcome,
-    });
-  }
-  if (outcome.exitCode !== 0) throw runnerError('child-exit', outcome);
+  const cleanup = () => {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  };
 
-  let value;
   try {
-    const text = outcome.stdout.trim();
-    if (!text) throw new SyntaxError('Handler produced no result');
-    value = JSON.parse(text);
-  } catch (cause) {
-    throw runnerError('invalid-result', { cause, stdout: outcome.stdout, stderr: outcome.stderr });
+    const outcome = await outcomePromise;
+    cleanup();
+    if (stopPromise) {
+      await stopPromise;
+      throw runnerError(reason, outcome);
+    }
+    if (outcome.spawnError) {
+      throw runnerError('spawn-failed', {
+        cause: outcome.spawnError,
+        originalCode: outcome.spawnError.code,
+        ...outcome,
+      });
+    }
+    if (outcome.exitCode !== 0) throw runnerError('child-exit', outcome);
+
+    let value;
+    try {
+      const text = outcome.stdout.trim();
+      if (!text) throw new SyntaxError('Handler produced no result');
+      value = JSON.parse(text);
+    } catch (cause) {
+      throw runnerError('invalid-result', { cause, stdout: outcome.stdout, stderr: outcome.stderr });
+    }
+    return { ...outcome, result: validateResult(value) };
+  } finally {
+    cleanup();
   }
-  return { ...outcome, result: validateResult(value) };
 }

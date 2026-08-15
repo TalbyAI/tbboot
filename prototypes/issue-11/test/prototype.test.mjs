@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
@@ -10,6 +13,7 @@ import {
   satisfies,
 } from '../runtime.mjs';
 import { runHandler } from '../runner.mjs';
+import { isProcessRunning, waitFor, waitForFile } from './support.mjs';
 
 const fixture = (name) => join(import.meta.dirname, 'fixtures', name);
 
@@ -89,4 +93,30 @@ test('rejects malformed results and non-zero child exits', async () => {
     runHandler({ runtime: 'node', script: fixture('nonzero-result.js'), request: {} }),
     (error) => error.code === 'child-exit' && error.exitCode === 7,
   );
+});
+
+test('timeout kills the root, child, and grandchild', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {
+  const pidFile = join(tmpdir(), `tbboot-issue-11-pids-${randomUUID()}.json`);
+  await assert.rejects(
+    runHandler({ runtime: 'node', script: fixture('tree-root.mjs'), request: { pidFile }, timeoutMs: 2000 }),
+    (error) => error.code === 'timeout',
+  );
+  const pids = JSON.parse(await readFile(pidFile, 'utf8'));
+  await waitFor(() => Promise.all(pids.map(isProcessRunning)).then((states) => states.every((running) => !running)));
+});
+
+test('cancellation exits through one path and leaves completed work', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {
+  const completedFile = join(tmpdir(), `tbboot-issue-11-completed-${randomUUID()}.txt`);
+  const controller = new AbortController();
+  const running = runHandler({
+    runtime: 'node',
+    script: fixture('cancellable-handler.js'),
+    request: { completedFile },
+    signal: controller.signal,
+    timeoutMs: 5000,
+  });
+  await waitForFile(completedFile);
+  controller.abort();
+  await assert.rejects(running, (error) => error.code === 'cancelled');
+  assert.equal(await readFile(completedFile, 'utf8'), 'completed\n');
 });
