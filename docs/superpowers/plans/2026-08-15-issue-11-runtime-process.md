@@ -4,7 +4,7 @@
 
 **Goal:** Build an isolated Windows x64 prototype that detects the supported runtimes, executes JavaScript/erasable TypeScript/PowerShell Custom handlers, and terminates complete process trees on timeout or cancellation.
 
-**Architecture:** Keep every implementation, fixture, test, and note under `prototypes/issue-11/`. `runtime.mjs` owns fixed-range detection; `adapters.mjs` describes direct Node and PowerShell invocations; `runner.mjs` owns the stdin/stdout/stderr protocol; `process-tree.mjs` owns Windows tree termination; and `driver.mjs` demonstrates SIGINT and exit code `130`. Tests use real executables on Windows and skip Windows-specific cases elsewhere.
+**Architecture:** Keep every implementation, fixture, test, and note under `prototypes/issue-11/`. `runtime.mjs` owns fixed-range detection; `adapters.mjs` describes direct Node and PowerShell invocations; `runner.mjs` owns the stdin/stdout/stderr protocol; `process-tree.mjs` owns Windows tree termination; and `driver.mjs` demonstrates SIGINT and exit code `130`. Tests use real executables on Windows x64 and skip Windows-specific cases elsewhere.
 
 **Tech Stack:** Node.js `>=24.12 <25`, ECMAScript modules, Node built-ins only, `node:test`, Windows x64, PowerShell 7 (`pwsh`), and Windows `taskkill.exe`.
 
@@ -13,12 +13,27 @@
 - All files live under `prototypes/issue-11/`; production code remains untouched.
 - Detect `node` with `>=24.12 <25` and `pwsh` with `>=7.6 <8`.
 - Detect `powershell.exe` and report it as explicitly unsupported, even when installed.
+- Use `node`, `pwsh`, and `windows-powershell` as the canonical runtime ids;
+  only `node` and `pwsh` are supported by this prototype. `powershell.exe` is
+  the command behind `windows-powershell`.
 - Node loads `.js` and erasable `.ts` handlers directly; do not add a TypeScript runner or transform flags.
 - Use one JSON request on handler stdin, one JSON result on handler stdout, and stderr for logs.
-- Start runtimes without a shell; do not build shell command strings for process launch.
+- Start runtimes with `shell: false` and argument arrays. Inline PowerShell may
+  use `-Command` with source as one argument; do not launch it through an OS
+  shell or concatenate an executable command line.
 - On timeout or cancellation, terminate the complete process tree with `taskkill /PID <pid> /T /F` and wait for the child to close.
 - Manual cancellation exits with code `130`; completed work remains and no rollback action runs.
-- On non-Windows systems, Windows-specific tests report `skip` or `unavailable`; they do not emulate Windows process behavior.
+- On non-Windows systems and Windows non-x64 hosts, Windows-specific tests
+  report `skip` or `unavailable`; they do not emulate Windows process behavior.
+- `runHandler` receives a canonical runtime id already verified as compatible;
+  it does not probe PATH or resolve a different executable. A child-process
+  spawn error maps to stable code `spawn-failed` and preserves the underlying
+  error code, including `ENOENT`.
+- `timeoutMs` is optional. When omitted, the runner disables its timer; the
+  operation layer is responsible for passing the ADR defaults for `check`,
+  `install`, or `uninstall`.
+- `npm run check` is incremental: each task extends the script only after the
+  referenced files have been created, and Task 5 runs the complete check.
 - Do not implement catalogs, YAML, authorization, installation, rollback, package dependencies, or a cross-platform process abstraction.
 - Commit each completed task only when the implementation session has authorization to commit; never push automatically.
 
@@ -53,7 +68,9 @@ The files are deliberately kept flat: this prototype has two runtime adapters, n
 
 - Produces `RUNTIME_DEFINITIONS`, `parseVersion(text)`, `parseRange(text)`, `satisfies(version, range)`, `classifyRuntime({ name, available, version })`, `detectRuntime(name)`, and `detectRuntimes()`.
 - A runtime classification is `{ name, command, version, status, supported }`, where `status` is one of `compatible`, `incompatible`, `missing`, or `unsupported`; `version` is `null` when unavailable.
-- `detectRuntimes()` returns an object with exactly `node`, `pwsh`, and `windowsPowerShell` properties.
+- `detectRuntimes()` returns an object with exactly `node`, `pwsh`, and
+  `windows-powershell` properties. The hyphenated property is accessed with
+  bracket notation and is the public canonical id, not an internal alias.
 
 - [ ] **Step 1: Add the minimal package metadata.**
 
@@ -66,7 +83,7 @@ Create `prototypes/issue-11/package.json`:
   "type": "module",
   "engines": { "node": ">=24.12 <25" },
   "scripts": {
-    "check": "node --check runtime.mjs && node --check adapters.mjs && node --check runner.mjs && node --check process-tree.mjs && node --check driver.mjs && node --check test/support.mjs && node --check test/prototype.test.mjs",
+    "check": "node --check runtime.mjs && node --check test/prototype.test.mjs",
     "test": "node --test test/prototype.test.mjs"
   }
 }
@@ -105,17 +122,17 @@ test('classifies compatible, incompatible, missing, and unsupported runtimes', (
   assert.equal(classifyRuntime({ name: 'node', available: true, version: '24.12.1' }).status, 'compatible');
   assert.equal(classifyRuntime({ name: 'node', available: true, version: '23.11.0' }).status, 'incompatible');
   assert.equal(classifyRuntime({ name: 'pwsh', available: false, version: null }).status, 'missing');
-  assert.equal(classifyRuntime({ name: 'windowsPowerShell', available: true, version: '5.1.0' }).status, 'unsupported');
+  assert.equal(classifyRuntime({ name: 'windows-powershell', available: true, version: '5.1.0' }).status, 'unsupported');
 });
 
-test('detects the real Windows runtime set', { skip: process.platform === 'win32' ? false : 'Windows-only runtime probes' }, async () => {
+test('detects the real Windows runtime set', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only runtime probes' }, async () => {
   const runtimes = await detectRuntimes();
   assert.equal(runtimes.node.status, 'compatible');
   assert.ok(['compatible', 'incompatible', 'missing'].includes(runtimes.pwsh.status));
-  assert.ok(['unsupported', 'missing'].includes(runtimes.windowsPowerShell.status));
+  assert.ok(['unsupported', 'missing'].includes(runtimes['windows-powershell'].status));
 });
 
-test('reports an unavailable Windows probe without emulation', { skip: process.platform === 'win32' ? false : 'Windows-only runtime probes' }, async () => {
+test('reports an unavailable Windows probe without emulation', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only runtime probes' }, async () => {
   const result = await detectRuntime('pwsh');
   assert.equal(typeof result.status, 'string');
 });
@@ -137,7 +154,7 @@ Implement the following behavior in `runtime.mjs`:
 export const RUNTIME_DEFINITIONS = Object.freeze({
   node: { command: 'node', range: '>=24.12 <25', versionArgs: ['--version'] },
   pwsh: { command: 'pwsh', range: '>=7.6 <8', versionArgs: ['--version'] },
-  windowsPowerShell: {
+  'windows-powershell': {
     command: 'powershell.exe',
     range: null,
     versionArgs: ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'],
@@ -145,7 +162,7 @@ export const RUNTIME_DEFINITIONS = Object.freeze({
 });
 ```
 
-Use `promisify(execFile)` with `{ encoding: 'utf8', windowsHide: true, shell: false }`. Parse the first `major.minor` or `major.minor.patch` sequence from probe output, default a missing patch to `0`, and compare numeric tuples. Treat `ENOENT` as `missing`; treat an installed `windowsPowerShell` as `unsupported` before range comparison; classify an unparsable or out-of-range supported runtime as `incompatible`.
+Use `promisify(execFile)` with `{ encoding: 'utf8', windowsHide: true, shell: false }`. Parse the first `major.minor` or `major.minor.patch` sequence from probe output, default a missing patch to `0`, and compare numeric tuples. Treat `ENOENT` as `missing`; treat an installed `windows-powershell` as `unsupported` before range comparison; classify an unparsable or out-of-range supported runtime as `incompatible`.
 
 Use these small pure functions for the fixed range grammar:
 
@@ -179,9 +196,10 @@ export function satisfies(version, rangeText) {
 
 Implement `classifyRuntime` from the definition table, then let
 `detectRuntime` run the definition’s `versionArgs`, map `ENOENT` to
-`available: false`, and pass probe output through `parseVersion`. Implement
-`detectRuntimes` with `Promise.all` over the three fixed names and return the
-documented property names.
+`available: false`, and pass probe output through `parseVersion`. Treat an
+installed `windows-powershell` runtime as `unsupported` before any range
+comparison. Implement `detectRuntimes` with `Promise.all` over the three fixed
+names and return the documented property names.
 
 - [ ] **Step 4: Run the runtime tests and the syntax check.**
 
@@ -192,7 +210,8 @@ npm test -- --test-name-pattern="parses versions|classifies"
 npm run check
 ```
 
-Expected: the focused tests pass, the Windows probe test is either passing on Windows or skipped elsewhere, and the syntax check exits `0`.
+Expected: the focused tests pass, the Windows probe test is either passing on
+Windows x64 or skipped elsewhere, and the incremental syntax check exits `0`.
 
 - [ ] **Step 5: Commit the runtime slice.**
 
@@ -205,6 +224,7 @@ git commit -m "feat: detect issue 11 runtimes"
 
 **Files:**
 
+- Modify: `prototypes/issue-11/package.json`
 - Create: `prototypes/issue-11/adapters.mjs`
 - Create: `prototypes/issue-11/runner.mjs`
 - Create: `prototypes/issue-11/test/fixtures/javascript-handler.js`
@@ -217,10 +237,17 @@ git commit -m "feat: detect issue 11 runtimes"
 **Interfaces:**
 
 - `buildInvocation(runtime, { script, content })` returns `{ file, args }` and requires exactly one of `script` or `content`.
-- `runHandler({ runtime, script, content, request, cwd, timeoutMs, signal })` resolves to `{ result, stdout, stderr, exitCode }` or rejects with an error whose stable `code` is `invalid-result`, `child-exit`, `timeout`, `cancelled`, or `tree-termination-failed`.
+- `runHandler({ runtime, script, content, request, cwd, timeoutMs, signal })` resolves to `{ result, stdout, stderr, exitCode }` or rejects with an error whose stable `code` is `invalid-result`, `child-exit`, `spawn-failed`, `timeout`, `cancelled`, or `tree-termination-failed`.
+- `runtime` is the canonical id selected by a prior compatible runtime
+  detection; `runHandler` does not re-probe PATH. `timeoutMs` may be omitted,
+  which disables the runner timer; when present it must be a positive finite
+  number.
 - `runner.mjs` keeps `waitForClose(child)`, `validateResult(value)`, and `runnerError(code, details)` private to the module.
 - Node external handlers export `default async function handler(request)`; Node inline content is the function body wrapped by the adapter.
-- PowerShell external and inline handlers receive `$Request` as a deserialized object and write exactly one JSON result to stdout; stderr is log-only.
+- A PowerShell external `.ps1` handler invoked with `-File` reads stdin and
+  deserializes `$Request` itself, then writes exactly one JSON result to
+  stdout. Inline PowerShell content is evaluated inside an adapter wrapper
+  that performs that stdin parsing and exposes `$Request`. Stderr is log-only.
 - A valid result has an object shape with `status` in `ok|missing|drift|error` and boolean `changed`; `message` and `details` are optional.
 
 - [ ] **Step 1: Add handler fixtures and failing protocol tests.**
@@ -289,7 +316,7 @@ test('executes JavaScript and erasable TypeScript through Node', async () => {
   assert.equal(ts.result.details.language, 'typescript');
 });
 
-test('executes PowerShell handlers through pwsh', { skip: process.platform === 'win32' ? false : 'PowerShell 7 is Windows-only here' }, async (t) => {
+test('executes PowerShell handlers through pwsh', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'PowerShell 7 is Windows x64-only here' }, async (t) => {
   const runtime = await detectRuntime('pwsh');
   if (runtime.status !== 'compatible') { t.skip(`pwsh is ${runtime.status}`); return; }
   const result = await runHandler({ runtime: 'pwsh', script: fixture('powershell-handler.ps1'), request: { operation: 'check' } });
@@ -297,7 +324,7 @@ test('executes PowerShell handlers through pwsh', { skip: process.platform === '
   assert.match(result.stderr, /pwsh-log:check/);
 });
 
-test('wraps inline PowerShell handler content', { skip: process.platform === 'win32' ? false : 'PowerShell 7 is Windows-only here' }, async (t) => {
+test('wraps inline PowerShell handler content', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'PowerShell 7 is Windows x64-only here' }, async (t) => {
   const runtime = await detectRuntime('pwsh');
   if (runtime.status !== 'compatible') { t.skip(`pwsh is ${runtime.status}`); return; }
   const result = await runHandler({
@@ -337,11 +364,11 @@ npm test -- --test-name-pattern="executes|wraps inline|rejects malformed"
 
 Expected: FAIL because the adapter and runner do not exist.
 
-- [ ] **Step 2: Implement direct invocation builders.**
+- [ ] **Step 2: Implement direct invocation builders and extend the incremental check.**
 
 In `adapters.mjs`, build Node invocations with `process.execPath`, `--input-type=module`, and a bootstrap that reads stdin, imports either a file URL or a `data:` URL, calls the default handler, and writes `JSON.stringify(result)` once. For inline Node content, wrap it exactly as `export default async function handler(request) { <content> }`; do not pass any type-transform or TypeScript runner flag.
 
-Build PowerShell invocations with executable `pwsh`, `-NoLogo`, `-NoProfile`, `-NonInteractive`, and either `-File <script>` or `-Command <wrapper>`. The inline wrapper reads stdin, assigns `$Request`, evaluates the supplied handler body, and leaves stdout solely to the handler result. Use argument arrays and `spawn` with `shell: false`; never concatenate an executable command line.
+Build PowerShell invocations with executable `pwsh`, `-NoLogo`, `-NoProfile`, `-NonInteractive`, and either `-File <script>` or `-Command <wrapper>`. An external `-File` script parses stdin itself; the inline wrapper reads stdin, assigns `$Request`, evaluates the supplied handler body, and leaves stdout solely to the handler result. Use argument arrays and `spawn` with `shell: false`; the inline `-Command` value is PowerShell source passed as one argv element, not an OS shell launch. Never concatenate an executable command line.
 
 Keep the adapter seam this small:
 
@@ -356,12 +383,19 @@ export function buildInvocation(runtime, { script, content }) {
 
 `nodeArgs` passes a file URL for `script` or a `data:text/javascript,` URL
 for the wrapped inline module to one Node bootstrap. `pwshArgs` passes a file
-to `-File` or a wrapper body to `-Command`; both paths read one JSON request
-from `[Console]::In.ReadToEnd()` and emit the handler’s one JSON result.
+to `-File` or a wrapper body to `-Command`; the inline path reads one JSON
+request from `[Console]::In.ReadToEnd()`, while the external script owns that
+same parsing. Both paths emit the handler’s one JSON result.
+
+Update `package.json` now that these files exist so `scripts.check` becomes:
+
+```json
+"check": "node --check runtime.mjs && node --check adapters.mjs && node --check runner.mjs && node --check test/prototype.test.mjs"
+```
 
 - [ ] **Step 3: Implement protocol validation and child I/O.**
 
-In `runner.mjs`, spawn the invocation with `stdio: ['pipe', 'pipe', 'pipe']`, write exactly `JSON.stringify(request)` followed by `stdin.end()`, collect stdout and stderr separately, and wait for the `close` event. If the exit code is non-zero, reject with `child-exit` and include `exitCode` and captured stderr. If it is zero, parse trimmed stdout with `JSON.parse`; reject empty, multiple-value, non-object, invalid-status, or non-boolean-`changed` output as `invalid-result`. Preserve stderr in the resolved value and never print it to stdout.
+In `runner.mjs`, spawn the invocation with `stdio: ['pipe', 'pipe', 'pipe']`, write exactly `JSON.stringify(request)` followed by `stdin.end()`, collect stdout and stderr separately, and wait for the `close` event. If the child emits an `error` event while spawning, reject with `spawn-failed` and preserve the original error code, including `ENOENT`. If the exit code is non-zero, reject with `child-exit` and include `exitCode` and captured stderr. If it is zero, parse trimmed stdout with `JSON.parse`; reject empty, multiple-value, non-object, invalid-status, or non-boolean-`changed` output as `invalid-result`. Preserve stderr in the resolved value and never print it to stdout.
 
 The core lifecycle should have this shape before timeout support is added:
 
@@ -376,6 +410,11 @@ if (result.exitCode !== 0) throw runnerError('child-exit', result);
 return { ...result, result: validateResult(JSON.parse(result.stdout.trim())) };
 ```
 
+Only create a timeout when `timeoutMs` is provided; do not pass `undefined` to
+`setTimeout`. `runHandler` must not call `detectRuntime`; a missing executable
+therefore produces `spawn-failed` with `cause.code === 'ENOENT'` if the caller
+invokes it without a successful preflight.
+
 - [ ] **Step 4: Run the focused protocol tests and syntax check.**
 
 Run:
@@ -385,12 +424,12 @@ npm test -- --test-name-pattern="executes|wraps inline|rejects malformed"
 npm run check
 ```
 
-Expected: JavaScript, erasable TypeScript, inline Node, invalid-result, and non-zero-exit tests pass; both PowerShell tests pass on Windows or are skipped elsewhere.
+Expected: JavaScript, erasable TypeScript, inline Node, invalid-result, and non-zero-exit tests pass; both PowerShell tests pass on Windows x64 or are skipped elsewhere.
 
 - [ ] **Step 5: Commit the protocol slice.**
 
 ```powershell
-git add prototypes/issue-11/adapters.mjs prototypes/issue-11/runner.mjs prototypes/issue-11/test
+git add prototypes/issue-11/package.json prototypes/issue-11/adapters.mjs prototypes/issue-11/runner.mjs prototypes/issue-11/test
 git commit -m "feat: run issue 11 handler protocols"
 ```
 
@@ -404,6 +443,7 @@ git commit -m "feat: run issue 11 handler protocols"
 - Create: `prototypes/issue-11/test/fixtures/tree-grandchild.mjs`
 - Create: `prototypes/issue-11/test/fixtures/cancellable-handler.js`
 - Modify: `prototypes/issue-11/runner.mjs`
+- Modify: `prototypes/issue-11/package.json`
 - Modify: `prototypes/issue-11/test/support.mjs`
 - Modify: `prototypes/issue-11/test/prototype.test.mjs`
 
@@ -424,6 +464,7 @@ Create the three process-tree fixtures with these bodies:
 
 ```js
 // test/fixtures/tree-grandchild.mjs
+setInterval(() => {}, 1000);
 await new Promise(() => {});
 ```
 
@@ -438,6 +479,7 @@ const grandchild = spawn(process.execPath, [
   fileURLToPath(new URL('./tree-grandchild.mjs', import.meta.url)),
 ], { stdio: 'ignore', windowsHide: true, shell: false });
 await writeFile(pidFile, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+setInterval(() => {}, 1000);
 await new Promise(() => {});
 ```
 
@@ -460,6 +502,7 @@ for (;;) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
+setInterval(() => {}, 1000);
 await new Promise(() => {});
 ```
 
@@ -470,6 +513,7 @@ import { writeFile } from 'node:fs/promises';
 
 export default async function handler(request) {
   await writeFile(request.completedFile, 'completed\n');
+  setInterval(() => {}, 1000);
   await new Promise(() => {});
 }
 ```
@@ -526,7 +570,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { isProcessRunning, waitFor, waitForFile } from './support.mjs';
 
-test('timeout kills the root, child, and grandchild', { skip: process.platform === 'win32' ? false : 'Windows-only process-tree test' }, async () => {
+test('timeout kills the root, child, and grandchild', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {
   const pidFile = join(tmpdir(), `tbboot-issue-11-pids-${randomUUID()}.json`);
   await assert.rejects(
     runHandler({ runtime: 'node', script: fixture('tree-root.mjs'), request: { pidFile }, timeoutMs: 500 }),
@@ -545,7 +589,7 @@ npm test -- --test-name-pattern="timeout kills"
 
 Expected: FAIL because no process-tree termination path exists.
 
-- [ ] **Step 2: Implement the native Windows tree kill.**
+- [ ] **Step 2: Implement the native Windows tree kill and extend the incremental check.**
 
 In `process-tree.mjs`, reject with `tree-termination-failed` when
 `process.platform !== 'win32'`. Otherwise call:
@@ -561,11 +605,19 @@ Capture command failures in an error that includes the PID and original stderr.
 Do not fall back to `child.kill()`, enumerate descendants manually, or add a
 Unix implementation; the prototype’s contract is Windows x64.
 
+Extend `package.json` so `scripts.check` now includes
+`process-tree.mjs` and `test/support.mjs`:
+
+```json
+"check": "node --check runtime.mjs && node --check adapters.mjs && node --check runner.mjs && node --check process-tree.mjs && node --check test/support.mjs && node --check test/prototype.test.mjs"
+```
+
 - [ ] **Step 3: Wire timeout and cancellation into the runner.**
 
-Start one timer when the child is spawned. On timer expiry, set the reason to
-`timeout`; on `signal.abort`, set it to `cancelled`. Both paths call one
-idempotent `stop(reason)` function that awaits `terminateProcessTree(child.pid)`.
+If `timeoutMs` is provided, start one timer when the child is spawned. When it
+is omitted, do not start a timer. On timer expiry, set the reason to `timeout`;
+on `signal.abort`, set it to `cancelled`. Both paths call one idempotent
+`stop(reason)` function that awaits `terminateProcessTree(child.pid)`.
 The `close` listener remains active until the child exits. After close, reject
 with the recorded reason and never parse a partial stdout buffer. Clear the
 timer and remove the abort listener on every completion path.
@@ -575,7 +627,7 @@ timer and remove the abort listener on every completion path.
 Add this test, using the fixture that writes before blocking:
 
 ```js
-test('cancellation exits through one path and leaves completed work', { skip: process.platform === 'win32' ? false : 'Windows-only process-tree test' }, async () => {
+test('cancellation exits through one path and leaves completed work', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {
   const completedFile = join(tmpdir(), `tbboot-issue-11-completed-${randomUUID()}.txt`);
   const controller = new AbortController();
   const running = runHandler({
@@ -598,7 +650,7 @@ Run:
 npm test -- --test-name-pattern="timeout kills|cancellation exits"
 ```
 
-Expected: both Windows tests pass; elsewhere both are explicitly skipped.
+Expected: both Windows x64 tests pass; elsewhere both are explicitly skipped.
 
 - [ ] **Step 5: Commit the process-control slice.**
 
@@ -612,13 +664,14 @@ git commit -m "feat: terminate issue 11 process trees"
 **Files:**
 
 - Create: `prototypes/issue-11/driver.mjs`
+- Modify: `prototypes/issue-11/package.json`
 - Modify: `prototypes/issue-11/test/prototype.test.mjs`
 - Modify: `prototypes/issue-11/test/support.mjs`
 
 **Interfaces:**
 
-- The driver accepts `--runtime node|pwsh`, `--script <path>`, `--request <json>`, `--timeout-ms <positive integer>`, and optional `--cancel-after-ms <positive integer>`.
-- `SIGINT` and `--cancel-after-ms` both call the same `AbortController.abort()` path.
+- The driver accepts `--runtime node|pwsh`, `--script <path>`, `--request <json>`, `--timeout-ms <positive integer>`, and optional `--cancel-after-ms <positive integer>` or test-only `--cancel-when-file <path>`.
+- `SIGINT`, `--cancel-after-ms`, and `--cancel-when-file` all call the same `AbortController.abort()` path. The file hook waits for an explicit handler-written marker, so cancellation tests do not depend on process startup timing.
 - A successful driver run prints the handler result JSON to stdout and exits `0`; a cancelled run logs to stderr and exits `130`; no rollback function or cleanup write is called.
 
 - [ ] **Step 1: Add the failing driver test.**
@@ -653,11 +706,11 @@ Add the imports not already present from Tasks 2 and 3 to
 import { spawn } from 'node:child_process';
 import { collectChild, prototypeRoot } from './support.mjs';
 
-test('driver maps deterministic cancellation to exit code 130', { skip: process.platform === 'win32' ? false : 'Windows-only driver test' }, async () => {
+test('driver maps deterministic cancellation to exit code 130', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only driver test' }, async () => {
   const completedFile = join(tmpdir(), `tbboot-issue-11-driver-${randomUUID()}.txt`);
   const child = spawn(process.execPath, [
     'driver.mjs', '--runtime', 'node', '--script', fixture('cancellable-handler.js'),
-    '--request', JSON.stringify({ completedFile }), '--cancel-after-ms', '100', '--timeout-ms', '5000',
+    '--request', JSON.stringify({ completedFile }), '--cancel-when-file', completedFile, '--timeout-ms', '5000',
   ], { cwd: prototypeRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
   const result = await collectChild(child);
   assert.equal(result.code, 130);
@@ -677,13 +730,22 @@ Expected: FAIL because `driver.mjs` does not exist.
 - [ ] **Step 2: Implement the small argument parser and driver lifecycle.**
 
 Parse the listed flags, reject unknown or missing values with exit code `2`,
-and resolve the script path from the current working directory. Create an
-`AbortController`, register one `SIGINT` listener, and schedule the optional
-`--cancel-after-ms` hook against the same abort callback. Call `runHandler`
-with the parsed request and signal. Print successful `result` JSON once; map
-`cancelled` to `process.exitCode = 130`, map other runner failures to
-`process.exitCode = 1`, and write diagnostics only to stderr. Do not add a
-rollback callback or delete the fixture’s completed file.
+reject using both cancellation-hook flags, and resolve the script path from
+the current working directory. Create an `AbortController`, register one
+`SIGINT` listener, and have the optional `--cancel-after-ms` timer or
+`--cancel-when-file` polling hook call the same abort callback. The file hook
+must wait for the marker with a bounded, unref'ed polling timer so it cannot
+outlive the runner on timeout. Call `runHandler` with the parsed request and
+signal. Print successful `result` JSON once; map `cancelled` to
+`process.exitCode = 130`, map other runner failures to `process.exitCode = 1`,
+and write diagnostics only to stderr. Do not add a rollback callback or delete
+the fixture’s completed file.
+
+Extend `package.json` so `scripts.check` becomes:
+
+```json
+"check": "node --check runtime.mjs && node --check adapters.mjs && node --check runner.mjs && node --check process-tree.mjs && node --check driver.mjs && node --check test/support.mjs && node --check test/prototype.test.mjs"
+```
 
 - [ ] **Step 3: Run driver tests and all existing tests.**
 
@@ -694,13 +756,13 @@ npm test -- --test-name-pattern="driver maps"
 npm test
 ```
 
-Expected: the driver test passes on Windows and is skipped elsewhere; all
+Expected: the driver test passes on Windows x64 and is skipped elsewhere; all
 previous runtime/protocol tests remain green.
 
 - [ ] **Step 4: Commit the driver slice.**
 
 ```powershell
-git add prototypes/issue-11/driver.mjs prototypes/issue-11/test/prototype.test.mjs prototypes/issue-11/test/support.mjs
+git add prototypes/issue-11/package.json prototypes/issue-11/driver.mjs prototypes/issue-11/test/prototype.test.mjs prototypes/issue-11/test/support.mjs
 git commit -m "feat: map issue 11 cancellation to 130"
 ```
 
@@ -731,9 +793,12 @@ Manual Ctrl+C demonstration:
 
 Explain that handler stdin/stdout/stderr form the protocol, Node imports `.js`
 and erasable `.ts` without transform flags, PowerShell uses `pwsh`, and
-`taskkill.exe /T /F` kills the complete tree. State that non-Windows checks
-skip rather than emulate, and that the prototype excludes catalogs, YAML,
-authorization, installation, rollback, and production integration.
+`taskkill.exe /T /F` kills the complete tree. State that non-Windows and
+non-x64 checks skip rather than emulate, and that the prototype excludes
+catalogs, YAML, authorization, installation, rollback, and production
+integration. Document that `--cancel-when-file` is the deterministic test hook
+when a handler-written marker is needed, while `--cancel-after-ms` remains a
+simple timed hook.
 
 - [ ] **Step 2: Run the final syntax and test commands.**
 
@@ -744,8 +809,9 @@ npm run check --prefix prototypes/issue-11
 npm test --prefix prototypes/issue-11
 ```
 
-Expected: both exit `0`; all non-Windows tests are explicitly marked skipped,
-and on Windows the runtime, handler, process-tree, and driver tests pass.
+Expected: both exit `0`; all non-Windows and Windows non-x64 tests are
+explicitly marked skipped, and on Windows x64 the runtime, handler,
+process-tree, and driver tests pass.
 
 - [ ] **Step 3: Inspect the final scope and whitespace.**
 
@@ -763,16 +829,16 @@ whitespace errors, and no dependency lockfile or production source appears.
 - [ ] **Step 4: Commit the documentation slice.**
 
 ```powershell
-git add prototypes/issue-11/README.md prototypes/issue-11/package.json
+git add prototypes/issue-11/README.md
 git commit -m "docs: describe issue 11 runtime prototype"
 ```
 
 ## Self-review against the specification
 
-- Runtime coverage maps to Task 1: Node and `pwsh` supported ranges, missing and incompatible classifications, and installed-but-unsupported `powershell.exe`.
-- Handler coverage maps to Task 2: JavaScript, erasable TypeScript, PowerShell 7, inline wrapping, one JSON request/result, stderr logs, malformed output, and non-zero exits.
-- Process coverage maps to Task 3: timeout, cancellation, `taskkill /T /F`, root/child/grandchild termination, waiting for close, exit-code-independent completed work, and non-Windows skips.
-- Manual signal coverage maps to Task 4: real `SIGINT`, deterministic test hook through the same cancellation path, exit code `130`, and no rollback.
+- Runtime coverage maps to Task 1: Node and `pwsh` supported ranges, missing and incompatible classifications, canonical `windows-powershell` naming, and installed-but-unsupported `powershell.exe`.
+- Handler coverage maps to Task 2: JavaScript, erasable TypeScript, PowerShell 7, external stdin parsing, inline wrapping, one JSON request/result, stderr logs, malformed output, spawn failures, and non-zero exits.
+- Process coverage maps to Task 3: timeout, cancellation, `taskkill /T /F`, root/child/grandchild termination, waiting for close, exit-code-independent completed work, and non-Windows/non-x64 skips.
+- Manual signal coverage maps to Task 4: real `SIGINT`, a handler-started file-signal test hook through the same cancellation path, exit code `130`, and no rollback.
 - Documentation and final verification map to Task 5; no catalogs, YAML, authorization, installation, rollback, package dependencies, or cross-platform abstraction are introduced.
 - No deferred implementation item remains; every named export, fixture, command, and test seam is defined in a task.
-- Type consistency: `runHandler` consumes the invocation produced by `buildInvocation`; both consume the runtime names from `RUNTIME_DEFINITIONS`; `driver.mjs` forwards the same request/signal contract used by the tests.
+- Type consistency: `runHandler` consumes the invocation produced by `buildInvocation`; both consume the canonical runtime names from `RUNTIME_DEFINITIONS`; runtime detection stays in preflight; `driver.mjs` forwards the same request/signal contract used by the tests.

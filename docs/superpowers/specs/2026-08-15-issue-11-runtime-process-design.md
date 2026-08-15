@@ -12,6 +12,8 @@ The prototype is evidence for the MVP contract; it is not production code.
 - Detect `pwsh` (PowerShell 7) with the supported range `>=7.6 <8`.
 - Detect `powershell.exe` (Windows PowerShell 5.1) and report it as explicitly
   unsupported, even when it is installed.
+- Use the canonical runtime ids `node`, `pwsh`, and `windows-powershell`; only
+  the first two are supported by this MVP prototype.
 - Execute JavaScript and erasable TypeScript through Node's native type
   stripping, without a TypeScript runner or transform flags.
 - Execute PowerShell handlers through PowerShell 7.
@@ -21,29 +23,41 @@ The prototype is evidence for the MVP contract; it is not production code.
 - Map manual cancellation to exit code `130`; completed work is not rolled
   back.
 
-The prototype runs against real executables on Windows x64. On other systems,
-Windows-specific tests report that they are skipped or unavailable; they do
-not emulate Windows behavior.
+The prototype runs against real executables on Windows x64. On non-Windows
+systems and Windows non-x64 hosts, Windows-specific tests report that they are
+skipped or unavailable; they do not emulate Windows behavior.
 
 ## Design
 
 All files live under `prototypes/issue-11/` and use only Node built-ins.
 
 - `runtime.mjs` detects executable availability and parses the small fixed
-  version ranges needed by this prototype.
+  version ranges needed by this prototype. Detection reports the canonical
+  runtime ids; `powershell.exe` is the command for `windows-powershell`.
 - `runner.mjs` starts a runtime without a shell, sends the JSON request, reads
-  the JSON result, and reports malformed output or non-zero child exits.
+  the JSON result, and reports malformed output, spawn failures, or non-zero
+  child exits. It receives a runtime id that the caller has already detected
+  as compatible; it never probes PATH or resolves another executable.
 - Runtime adapters expose the common handler shape. Node loads `.js` and `.ts`
-  handlers directly; PowerShell 7 invokes a `.ps1` handler. Inline content is
-  wrapped by the adapter.
+  handlers directly; PowerShell 7 invokes an external `.ps1` handler with
+  `-File`, and that script reads and deserializes stdin itself. Inline
+  PowerShell content is wrapped by the adapter so the wrapper reads stdin and
+  exposes `$Request` before evaluating the body.
+- The runner's `timeoutMs` is optional: when omitted, no runner timer is
+  started. The production operation layer owns the ADR defaults (60 seconds
+  for `check`, 30 minutes for `install`/`uninstall`) and passes the selected
+  value to the runner.
 - `process-tree.mjs` handles timeout and cancellation with Windows
   `taskkill /PID <pid> /T /F`. Both paths wait for the child to close.
 - A small driver handles `SIGINT`, calls the same cancellation path, and exits
   with `130`.
 
-No shell command strings, package dependencies, catalog behavior, YAML
-handling, authorization, installation, rollback, or cross-platform process
-abstraction are part of this prototype.
+No OS shell command lines, `shell: true`, package dependencies, catalog
+behavior, YAML handling, authorization, installation, rollback, or
+cross-platform process abstraction are part of this prototype. For inline
+PowerShell, the `-Command` value is PowerShell source passed as one argument to
+`pwsh` with `shell: false`; it is not a command launched through `cmd.exe` or
+another shell.
 
 ## Verification
 
