@@ -50,6 +50,16 @@ function assertSchemaFailure(result, path) {
     JSON.stringify(result.diagnostics));
 }
 
+test('rejects unsupported document kinds', () => {
+  for (const kind of ['unknown', 'constructor', 'toString', '__proto__']) {
+    assert.throws(
+      () => validateDocument({ kind, text: 'schemaVersion: 1\nsources: []\n' }),
+      TypeError,
+      kind,
+    );
+  }
+});
+
 test('accepts all seven canonical documents', async () => {
   for (const [kind, document] of Object.entries(validDocuments)) {
     const result = validateDocument({

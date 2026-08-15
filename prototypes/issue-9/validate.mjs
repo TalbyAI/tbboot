@@ -7,10 +7,10 @@ const contract = JSON.parse(readFileSync(new URL('./contract.schema.json', impor
 const ajv = new Ajv({ strict: true, allErrors: true, discriminator: true });
 ajv.addSchema(contract);
 
-const validators = Object.fromEntries(
+const validators = Object.assign(Object.create(null), Object.fromEntries(
   ['manifest', 'source', 'recipe', 'catalog', 'lockfile', 'state', 'trust']
     .map((kind) => [kind, ajv.getSchema(`${schemaId}#/$defs/${kind}`)]),
-);
+));
 
 if (Object.values(validators).some((validator) => validator === undefined)) {
   throw new Error('The contract does not expose all document schemas');
@@ -102,8 +102,8 @@ function reservedDiagnostics(kind, value, context) {
 }
 
 export function validateDocument({ kind, text, document, source, recipe }) {
+  if (!Object.hasOwn(validators, kind)) throw new TypeError(`Unsupported document kind: ${kind}`);
   const validator = validators[kind];
-  if (!validator) throw new TypeError(`Unsupported document kind: ${kind}`);
   const yamlDocuments = parseAllDocuments(text, {
     schema: 'core',
     uniqueKeys: true,
