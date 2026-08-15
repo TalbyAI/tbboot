@@ -415,7 +415,7 @@ test('reports several incomparable maximal revisions', () => withFixture(({ repo
 
 Run: `node --test prototypes/issue-10/test/prototype.test.mjs`
 
-Expected: the earlier tests pass and the two intersection tests fail because `intersectSelectors` is not exported/implemented.
+Expected: the earlier tests pass and the four intersection tests fail because `intersectSelectors` is not exported/implemented.
 
 - [ ] **Step 3: Implement set intersection and reuse maxima selection**
 
@@ -494,7 +494,7 @@ Expected: exit code 0, 9 tests passing, 0 failures.
 
 Run: `git diff main...HEAD --check; git diff main...HEAD --stat; git status --short --branch`
 
-Expected: no whitespace errors, only the Issue #10 design/plan and `prototypes/issue-10/` files, plus the already requested `AGENTS.md` change; branch is `issue/10-prototype`.
+Expected: no whitespace errors, only `.gitignore`, the Issue #10 design/plan and `prototypes/issue-10/` files, plus the already requested `AGENTS.md` change; branch is `issue/10-prototype`.
 
 - [ ] **Step 5: Commit the README**
 

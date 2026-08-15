@@ -29,8 +29,9 @@ function existingRef(repoPath, ref) {
   try {
     git(repoPath, ['show-ref', '--verify', '--quiet', ref]);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.status === 1) return false;
+    throw error;
   }
 }
 
@@ -49,8 +50,9 @@ function isAncestor(repoPath, ancestor, descendant) {
   try {
     git(repoPath, ['merge-base', '--is-ancestor', ancestor, descendant]);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.status === 1) return false;
+    throw error;
   }
 }
 

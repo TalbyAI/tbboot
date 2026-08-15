@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { createFixtureRepo, removeFixtureRepo } from './fixture.mjs';
 import { GitSelectorError, intersectSelectors, resolveSelector } from '../proposed/git-source.mjs';
@@ -32,6 +36,35 @@ test('rejects a missing ref', () => withFixture(({ repoPath }) => {
     (error) => error instanceof GitSelectorError && error.code === 'git-ref-not-found',
   );
 }));
+
+test('propagates Git errors for an invalid repository', () => {
+  const repoPath = join(tmpdir(), `tbboot-issue-10-missing-${randomUUID()}`);
+  assert.throws(
+    () => resolveSelector(repoPath, { ref: 'main' }),
+    (error) => !(error instanceof GitSelectorError) && error.status === 128,
+  );
+});
+
+test('removes the fixture when repository setup fails', async () => {
+  const before = new Set(await readdir(tmpdir()));
+  const previousIndex = process.env.GIT_INDEX_FILE;
+  process.env.GIT_INDEX_FILE = join(
+    tmpdir(),
+    `tbboot-issue-10-missing-parent-${randomUUID()}`,
+    'index',
+  );
+  try {
+    await assert.rejects(() => createFixtureRepo());
+  } finally {
+    if (previousIndex === undefined) delete process.env.GIT_INDEX_FILE;
+    else process.env.GIT_INDEX_FILE = previousIndex;
+  }
+  const after = await readdir(tmpdir());
+  assert.deepEqual(
+    after.filter((name) => name.startsWith('tbboot-issue-10-') && !before.has(name)),
+    [],
+  );
+});
 
 test('resolves inclusive ranges and equal bounds by ancestry', () => withFixture(({ repoPath, revisions }) => {
   assert.equal(resolveSelector(repoPath, { from: 'v1', to: 'v2' }).revision, revisions.x);
