@@ -1,0 +1,5 @@
+schemaVersion: 1
+sources:
+  - provider: local
+    locator:
+      path: ../source
