@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   classifyRuntime,
@@ -8,6 +9,9 @@ import {
   parseVersion,
   satisfies,
 } from '../runtime.mjs';
+import { runHandler } from '../runner.mjs';
+
+const fixture = (name) => join(import.meta.dirname, 'fixtures', name);
 
 test('parses versions and the fixed inclusive/exclusive ranges', () => {
   assert.deepEqual(parseVersion('v24.12.1'), { major: 24, minor: 12, patch: 1 });
@@ -37,4 +41,52 @@ test('detects the real Windows runtime set', { skip: process.platform === 'win32
 test('reports an unavailable Windows probe without emulation', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only runtime probes' }, async () => {
   const result = await detectRuntime('pwsh');
   assert.equal(typeof result.status, 'string');
+});
+
+test('executes JavaScript and erasable TypeScript through Node', async () => {
+  const js = await runHandler({ runtime: 'node', script: fixture('javascript-handler.js'), request: { operation: 'check' } });
+  assert.equal(js.result.details.language, 'javascript');
+  assert.match(js.stderr, /js-log:check/);
+
+  const ts = await runHandler({ runtime: 'node', script: fixture('erasable-handler.ts'), request: { operation: 'check' } });
+  assert.equal(ts.result.details.language, 'typescript');
+});
+
+test('executes PowerShell handlers through pwsh', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'PowerShell 7 is Windows x64-only here' }, async (t) => {
+  const runtime = await detectRuntime('pwsh');
+  if (runtime.status !== 'compatible') { t.skip(`pwsh is ${runtime.status}`); return; }
+  const result = await runHandler({ runtime: 'pwsh', script: fixture('powershell-handler.ps1'), request: { operation: 'check' } });
+  assert.equal(result.result.details.language, 'powershell');
+  assert.match(result.stderr, /pwsh-log:check/);
+});
+
+test('wraps inline PowerShell handler content', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'PowerShell 7 is Windows x64-only here' }, async (t) => {
+  const runtime = await detectRuntime('pwsh');
+  if (runtime.status !== 'compatible') { t.skip(`pwsh is ${runtime.status}`); return; }
+  const result = await runHandler({
+    runtime: 'pwsh',
+    content: "[ordered]@{ status = 'ok'; changed = $false; details = @{ inline = $true } } | ConvertTo-Json -Compress",
+    request: { operation: 'check' },
+  });
+  assert.equal(result.result.details.inline, true);
+});
+
+test('wraps inline Node handler content', async () => {
+  const result = await runHandler({
+    runtime: 'node',
+    content: "return { status: 'ok', changed: false, details: { inline: true } };",
+    request: { operation: 'check' },
+  });
+  assert.equal(result.result.details.inline, true);
+});
+
+test('rejects malformed results and non-zero child exits', async () => {
+  await assert.rejects(
+    runHandler({ runtime: 'node', script: fixture('invalid-result.js'), request: {} }),
+    (error) => error.code === 'invalid-result',
+  );
+  await assert.rejects(
+    runHandler({ runtime: 'node', script: fixture('nonzero-result.js'), request: {} }),
+    (error) => error.code === 'child-exit' && error.exitCode === 7,
+  );
 });
