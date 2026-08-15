@@ -28,6 +28,21 @@ test('creates isolated fixture roots and cleans only its own temporary directory
   }
 });
 
+test('removes the temporary root when fixture copying fails', async () => {
+  const copyError = new Error('copy failed');
+  let root;
+  await assert.rejects(
+    createFixture({
+      copy: async (_source, destination) => {
+        root = destination;
+        throw copyError;
+      },
+    }),
+    (error) => error === copyError,
+  );
+  await assert.rejects(access(root));
+});
+
 test('shares the cleanup promise while removal is in flight', async () => {
   const fixture = await createFixture();
   try {
@@ -90,6 +105,27 @@ test('rejects and reaps a child process that exceeds its timeout', async () => {
         return true;
       },
     );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('does not wait for a child that handles SIGTERM', async () => {
+  const fixture = await createFixture();
+  const started = Date.now();
+  try {
+    await assert.rejects(
+      runCommand({
+        file: process.execPath,
+        args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm'],
+        cwd: fixture.consumerRoot,
+        timeoutMs: 20,
+      }),
+      (error) => error.code === 'ETIMEDOUT',
+    );
+    if (process.platform !== 'win32') {
+      assert.ok(Date.now() - started < 400);
+    }
   } finally {
     await fixture.cleanup();
   }

@@ -18,11 +18,13 @@ npm test
 
 - `createFixture()` copies `fixture/` into a unique temporary directory and
   returns `consumerRoot`, `sourceRoot`, and a retry-safe `cleanup()` that
-  shares its in-flight removal promise.
+  shares its in-flight removal promise. If copying fails, it removes the
+  temporary root before rethrowing the copy error.
 - `runCommand({ file, args, cwd, env, timeoutMs })` invokes a real child
   process without merging stdout and stderr. `timeoutMs` defaults to 30 seconds;
-  an expired command is terminated and reaped before the promise rejects with
-  `ETIMEDOUT`.
+  an expired command receives `SIGTERM` and then `SIGKILL` after a 100 ms grace
+  period on POSIX, while Windows uses forceful termination, before the promise
+  rejects with `ETIMEDOUT`.
 - `snapshotFiles(root)` returns sorted relative file paths and raw `Buffer`
   contents for byte-for-byte comparisons.
 - `parseJsonOutput(stdout)` accepts surrounding whitespace and requires one

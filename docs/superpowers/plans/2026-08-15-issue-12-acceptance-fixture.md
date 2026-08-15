@@ -93,7 +93,7 @@ Expected: FAIL because `test/prototype.test.mjs` has not been created yet, but n
 - Create: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
-- `createFixture() -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory and shares one in-flight cleanup promise, retrying after a failed removal.
+- `createFixture({ copy = cp } = {}) -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory, removes the root if copying fails, and shares one in-flight cleanup promise, retrying after a failed removal.
 - `snapshotFiles(root) -> Promise<Array<{ path, bytes }>>` recursively records sorted relative file paths and `Buffer` contents.
 
 - [ ] **Step 1: Write the failing lifecycle and snapshot tests.**
@@ -112,6 +112,21 @@ test('creates isolated fixture roots and cleans only its own temporary directory
   } finally {
     await second.cleanup();
   }
+});
+
+test('removes the temporary root when fixture copying fails', async () => {
+  const copyError = new Error('copy failed');
+  let root;
+  await assert.rejects(
+    createFixture({
+      copy: async (_source, destination) => {
+        root = destination;
+        throw copyError;
+      },
+    }),
+    (error) => error === copyError,
+  );
+  await assert.rejects(access(root));
 });
 
 test('snapshots nested file paths and exact bytes deterministically', async () => {
@@ -149,9 +164,14 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = join(here, 'fixture');
 
-export async function createFixture() {
+export async function createFixture({ copy = cp } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-12-'));
-  await cp(fixtureRoot, root, { recursive: true });
+  try {
+    await copy(fixtureRoot, root, { recursive: true });
+  } catch (error) {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
   let cleanupPromise;
   return {
     root,
@@ -205,7 +225,7 @@ Expected: 2 passing tests and 0 failures.
 - Modify: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
-- `runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell, does not merge streams, and terminates/reaps a child that exceeds the timeout before rejecting with `ETIMEDOUT`.
+- `runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell, does not merge streams, and terminates/reaps a child that exceeds the timeout before rejecting with `ETIMEDOUT`; POSIX uses `SIGTERM` then `SIGKILL` after 100 ms, while Windows uses forceful termination.
 - `parseJsonOutput(stdout) -> unknown` parses exactly one non-empty JSON document.
 
 - [ ] **Step 1: Write failing process, JSON, and read-only tests.**
@@ -242,6 +262,27 @@ test('rejects and reaps a child process that exceeds its timeout', async () => {
       }),
       (error) => error.code === 'ETIMEDOUT',
     );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('does not wait for a child that handles SIGTERM', async () => {
+  const fixture = await createFixture();
+  const started = Date.now();
+  try {
+    await assert.rejects(
+      runCommand({
+        file: process.execPath,
+        args: [cliPath, '--root', fixture.consumerRoot, '--handle-sigterm'],
+        cwd: fixture.consumerRoot,
+        timeoutMs: 20,
+      }),
+      (error) => error.code === 'ETIMEDOUT',
+    );
+    if (process.platform !== 'win32') {
+      assert.ok(Date.now() - started < 400);
+    }
   } finally {
     await fixture.cleanup();
   }
@@ -298,10 +339,12 @@ export function runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) {
     let timedOut = false;
     let timeoutError;
     let timeoutId;
+    let forceKillId;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutId);
+      clearTimeout(forceKillId);
       callback(value);
     };
     child.stdout.setEncoding('utf8');
@@ -324,7 +367,12 @@ export function runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) {
         new Error(`command timed out after ${timeoutMs}ms`),
         { code: 'ETIMEDOUT', timeoutMs },
       );
-      child.kill();
+      if (process.platform === 'win32') {
+        child.kill();
+      } else {
+        child.kill('SIGTERM');
+        forceKillId = setTimeout(() => child.kill('SIGKILL'), 100);
+      }
     }, timeoutMs);
   });
 }
@@ -348,6 +396,11 @@ const value = (name, fallback = undefined) => {
 const root = value('--root');
 const delay = Number(value('--delay', '0'));
 if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+if (process.argv.includes('--handle-sigterm')) {
+  process.on('SIGTERM', () => {});
+  setTimeout(() => process.exit(99), 500);
+  await new Promise(() => {});
+}
 process.stderr.write('probe stderr\n');
 process.stdout.write(`${JSON.stringify({
   status: 'ok',

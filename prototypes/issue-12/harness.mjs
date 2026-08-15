@@ -8,9 +8,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = join(here, 'fixture');
 const compare = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 
-export async function createFixture() {
+export async function createFixture({ copy = cp } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-12-'));
-  await cp(fixtureRoot, root, { recursive: true });
+  try {
+    await copy(fixtureRoot, root, { recursive: true });
+  } catch (error) {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
   let cleanupPromise;
   return {
     root,
@@ -67,10 +72,12 @@ export function runCommand({ file, args = [], cwd, env, timeoutMs = 30_000 }) {
     let timedOut = false;
     let timeoutError;
     let timeoutId;
+    let forceKillId;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutId);
+      clearTimeout(forceKillId);
       callback(value);
     };
     child.stdout.setEncoding('utf8');
@@ -93,7 +100,12 @@ export function runCommand({ file, args = [], cwd, env, timeoutMs = 30_000 }) {
         new Error(`command timed out after ${timeoutMs}ms`),
         { code: 'ETIMEDOUT', timeoutMs },
       );
-      child.kill();
+      if (process.platform === 'win32') {
+        child.kill();
+      } else {
+        child.kill('SIGTERM');
+        forceKillId = setTimeout(() => child.kill('SIGKILL'), 100);
+      }
     }, timeoutMs);
   });
 }
