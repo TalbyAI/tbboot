@@ -68,7 +68,7 @@ The files are deliberately kept flat: this prototype has two runtime adapters, n
 
 **Interfaces:**
 
-- Produces `RUNTIME_DEFINITIONS`, `parseVersion(text)`, `parseRange(text)`, `satisfies(version, range)`, `classifyRuntime({ name, available, version, file })`, `detectRuntime(name)`, and `detectRuntimes()`.
+- Produces deeply immutable `RUNTIME_DEFINITIONS`, `parseVersion(text)`, `parseRange(text)`, `satisfies(version, range)`, `classifyRuntime({ name, available, version, file })`, `detectRuntime(name)`, and `detectRuntimes()`.
 - A runtime classification is `{ name, command, file, version, status, supported }`, where `status` is one of `compatible`, `incompatible`, `missing`, or `unsupported`; `file` and `version` are `null` when unavailable.
 - `detectRuntimes()` returns an object with exactly `node`, `pwsh`, and
   `windows-powershell` properties. The hyphenated property is accessed with
@@ -198,11 +198,13 @@ export function satisfies(version, rangeText) {
 
 Implement `classifyRuntime` from the definition table, then let
 `detectRuntime` runs the definition’s `versionArgs`, maps `ENOENT` to
-`available: false`, resolves the first executable selected by PATH with the
-native resolver, and passes probe output through `parseVersion`. Treat an
-installed `windows-powershell` runtime as `unsupported` before any range
-comparison. Implement `detectRuntimes` with `Promise.all` over the three fixed
-names and return the documented property names.
+`available: false`, and treats every other probe failure as
+`runtime-probe-failed`, preserving captured stdout and stderr as diagnostics.
+Only a successful probe resolves the first executable selected by PATH with the
+native resolver and passes output through `parseVersion`. Treat an installed
+`windows-powershell` runtime as `unsupported` before any range comparison.
+Implement `detectRuntimes` with `Promise.all` over the three fixed names and
+return the documented property names.
 
 - [ ] **Step 4: Run the runtime tests and the syntax check.**
 

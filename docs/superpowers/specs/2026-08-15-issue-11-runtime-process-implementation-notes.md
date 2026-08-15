@@ -36,7 +36,9 @@ All files live under `prototypes/issue-11/` and use only Node built-ins.
 - `runtime.mjs` detects executable availability and parses the small fixed
   version ranges needed by this prototype. Detection reports the canonical
   runtime ids and the selected executable path; `powershell.exe` is the command
-  for `windows-powershell`.
+  for `windows-powershell`. Runtime definitions are deeply immutable, and a
+  non-ENOENT probe failure is a `runtime-probe-failed` detection error with the
+  captured stdout and stderr preserved.
 - `runner.mjs` starts a runtime without a shell, sends the JSON request, reads
   the JSON result, and reports malformed output, spawn failures, or non-zero
   child exits. It receives a runtime id and executable path that the caller has

@@ -11,6 +11,7 @@ import {
   detectRuntimes,
   parseRange,
   parseVersion,
+  RUNTIME_DEFINITIONS,
   satisfies,
 } from '../runtime.mjs';
 import { terminateProcessTree } from '../process-tree.mjs';
@@ -35,6 +36,12 @@ test('classifies compatible, incompatible, missing, and unsupported runtimes', (
   assert.equal(classifyRuntime({ name: 'node', available: true, version: '23.11.0' }).status, 'incompatible');
   assert.equal(classifyRuntime({ name: 'pwsh', available: false, version: null }).status, 'missing');
   assert.equal(classifyRuntime({ name: 'windows-powershell', available: true, version: '5.1.0' }).status, 'unsupported');
+});
+
+test('keeps runtime definitions deeply immutable', () => {
+  assert.equal(Object.isFrozen(RUNTIME_DEFINITIONS), true);
+  assert.equal(Object.isFrozen(RUNTIME_DEFINITIONS.node), true);
+  assert.equal(Object.isFrozen(RUNTIME_DEFINITIONS.node.versionArgs), true);
 });
 
 test('detects the real Windows runtime set', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only runtime probes' }, async () => {

@@ -3,17 +3,21 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const executableResolver = process.platform === 'win32' ? 'where.exe' : 'which';
+const freezeDefinition = (definition) => Object.freeze({
+  ...definition,
+  versionArgs: Object.freeze([...definition.versionArgs]),
+});
 const VERSION_RE = /(\d+)\.(\d+)(?:\.(\d+))?/;
 const RANGE_RE = /^>=(\d+\.\d+(?:\.\d+)?)\s+<(\d+(?:\.\d+){0,2})$/;
 
 export const RUNTIME_DEFINITIONS = Object.freeze({
-  node: { command: 'node', range: '>=24.12 <25', versionArgs: ['--version'] },
-  pwsh: { command: 'pwsh', range: '>=7.6 <8', versionArgs: ['--version'] },
-  'windows-powershell': {
+  node: freezeDefinition({ command: 'node', range: '>=24.12 <25', versionArgs: ['--version'] }),
+  pwsh: freezeDefinition({ command: 'pwsh', range: '>=7.6 <8', versionArgs: ['--version'] }),
+  'windows-powershell': freezeDefinition({
     command: 'powershell.exe',
     range: null,
     versionArgs: ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'],
-  },
+  }),
 });
 
 export function parseVersion(text) {
@@ -87,7 +91,11 @@ export async function detectRuntime(name) {
     versionText = stdout;
   } catch (error) {
     if (error.code === 'ENOENT') return classifyRuntime({ name, available: false, version: null });
-    versionText = error.stdout ?? '';
+    const probeError = new Error(`Runtime probe failed for ${name}`, { cause: error });
+    probeError.code = 'runtime-probe-failed';
+    probeError.stdout = error.stdout ?? '';
+    probeError.stderr = error.stderr ?? '';
+    throw probeError;
   }
   const file = await resolveExecutable(definition.command);
   return classifyRuntime({ name, available: true, version: parseVersion(versionText), file });
