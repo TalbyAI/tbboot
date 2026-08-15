@@ -30,6 +30,7 @@ producción del repositorio.
 - Las ramas y commits locales fuera de `main` se permiten cuando forman parte de
   la tarea solicitada; no crear ramas ni commits para trabajo fuera de ese
   alcance.
+- Si no existe issue, usar el formato `task/<short-description>`; si existe issue, usar `issue/<number>-<short-description>`.
 - Si la tarea solicitada requiere un commit mientras la rama actual es `main`,
   crear primero una rama cuyo nombre se derive del issue o trabajo en curso y
   hacer allí el commit.
