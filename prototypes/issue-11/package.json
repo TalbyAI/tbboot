@@ -1,0 +1,10 @@
+{
+  "name": "tbboot-issue-11-runtime-process-prototype",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.12 <25" },
+  "scripts": {
+    "check": "node --check runtime.mjs && node --check test/prototype.test.mjs",
+    "test": "node --test test/prototype.test.mjs"
+  }
+}
