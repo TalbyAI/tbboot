@@ -1,0 +1,20 @@
+schemaVersion: 1
+steps:
+  - type: file
+    input: files/editorconfig
+    target: .editorconfig
+  - type: file-fragment
+    input: files/agents.md
+    target: AGENTS.md
+    optional: true
+  - type: custom
+    check:
+      runtime: node
+      content: "return { status: 'ok', changed: false };"
+      timeoutSeconds: 60
+    install:
+      runtime: pwsh
+      script: scripts/install.ps1
+    uninstall:
+      runtime: node
+      script: scripts/uninstall.mjs

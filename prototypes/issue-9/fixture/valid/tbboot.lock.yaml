@@ -1,0 +1,16 @@
+schemaVersion: 1
+sources:
+  - source:
+      provider: local
+      locator:
+        path: ../shared-source
+    fingerprint: sha256:local-content
+  - source:
+      provider: git
+      locator:
+        repository: https://example.com/team/recipes.git
+        path: sources/windows
+      selector:
+        ref: main
+    revision: 8c17f4
+    fingerprint: sha256:git-content

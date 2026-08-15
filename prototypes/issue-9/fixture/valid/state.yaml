@@ -1,0 +1,39 @@
+schemaVersion: 1
+effects:
+  - type: file
+    source:
+      provider: local
+      locator:
+        path: ../shared-source
+    sourceFingerprint: sha256:local-content
+    recipe: baseline
+    step: 1
+    target: .editorconfig
+    artifactFingerprint: sha256:file-content
+    created: true
+  - type: file-fragment
+    source:
+      provider: git
+      locator:
+        repository: https://example.com/team/recipes.git
+      selector:
+        ref: main
+    revision: 8c17f4
+    sourceFingerprint: sha256:git-content
+    recipe: baseline
+    step: 2
+    target: AGENTS.md
+    marker: team-recipes/baseline
+    artifactFingerprint: sha256:fragment-content
+  - type: custom
+    source:
+      provider: git
+      locator:
+        repository: https://example.com/team/recipes.git
+      selector:
+        ref: main
+    revision: 8c17f4
+    sourceFingerprint: sha256:git-content
+    recipe: baseline
+    step: 3
+    uninstallSupported: true

@@ -1,0 +1,11 @@
+schemaVersion: 1
+entries:
+  - title: Team defaults
+    description: Shared repository setup recipes
+    keywords: [team, defaults]
+    source:
+      provider: git
+      locator:
+        repository: https://example.com/team/recipes.git
+      selector:
+        ref: main
