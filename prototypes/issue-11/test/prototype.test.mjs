@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ import {
   satisfies,
 } from '../runtime.mjs';
 import { runHandler } from '../runner.mjs';
-import { isProcessRunning, waitFor, waitForFile } from './support.mjs';
+import { collectChild, isProcessRunning, prototypeRoot, waitFor, waitForFile } from './support.mjs';
 
 const fixture = (name) => join(import.meta.dirname, 'fixtures', name);
 
@@ -119,4 +120,16 @@ test('cancellation exits through one path and leaves completed work', { skip: pr
   controller.abort();
   await assert.rejects(running, (error) => error.code === 'cancelled');
   assert.equal(await readFile(completedFile, 'utf8'), 'completed\n');
+});
+
+test('driver maps deterministic cancellation to exit code 130', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only driver test' }, async () => {
+  const completedFile = join(tmpdir(), `tbboot-issue-11-driver-${randomUUID()}.txt`);
+  const child = spawn(process.execPath, [
+    'driver.mjs', '--runtime', 'node', '--script', fixture('cancellable-handler.js'),
+    '--request', JSON.stringify({ completedFile }), '--cancel-when-file', completedFile, '--timeout-ms', '5000',
+  ], { cwd: prototypeRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
+  const result = await collectChild(child);
+  assert.equal(result.code, 130);
+  assert.equal(await readFile(completedFile, 'utf8'), 'completed\n');
+  assert.doesNotMatch(result.stderr, /rollback/i);
 });
