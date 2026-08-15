@@ -4,6 +4,8 @@ const value = (name, fallback = undefined) => {
 };
 
 const root = value('--root');
+const delay = Number(value('--delay', '0'));
+if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 process.stderr.write('probe stderr\n');
 process.stdout.write(`${JSON.stringify({
   status: 'ok',

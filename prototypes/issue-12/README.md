@@ -17,9 +17,12 @@ npm test
 `harness.mjs` exports four small seams:
 
 - `createFixture()` copies `fixture/` into a unique temporary directory and
-  returns `consumerRoot`, `sourceRoot`, and an idempotent `cleanup()`.
-- `runCommand({ file, args, cwd, env })` invokes a real child process without
-  merging stdout and stderr.
+  returns `consumerRoot`, `sourceRoot`, and a retry-safe `cleanup()` that
+  shares its in-flight removal promise.
+- `runCommand({ file, args, cwd, env, timeoutMs })` invokes a real child
+  process without merging stdout and stderr. `timeoutMs` defaults to 30 seconds;
+  an expired command is terminated and reaped before the promise rejects with
+  `ETIMEDOUT`.
 - `snapshotFiles(root)` returns sorted relative file paths and raw `Buffer`
   contents for byte-for-byte comparisons.
 - `parseJsonOutput(stdout)` accepts surrounding whitespace and requires one
@@ -27,19 +30,19 @@ npm test
 
 Future acceptance tests should call the production CLI through
 `runCommand`, rather than importing production modules. For a read-only
-command, snapshot the Consumer repository before and after the command:
+command, snapshot the complete fixture before and after the command:
 
 ```js
 const fixture = await createFixture();
 try {
-  const before = await snapshotFiles(fixture.consumerRoot);
+  const before = await snapshotFiles(fixture.root);
   const result = await runCommand({
     file: process.execPath,
     args: [productionCli, 'doctor', '--root', fixture.consumerRoot],
     cwd: fixture.consumerRoot,
   });
   assert.equal(result.exitCode, 0);
-  assert.deepEqual(await snapshotFiles(fixture.consumerRoot), before);
+  assert.deepEqual(await snapshotFiles(fixture.root), before);
   assert.ok(parseJsonOutput(result.stdout));
 } finally {
   await fixture.cleanup();

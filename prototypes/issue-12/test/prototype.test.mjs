@@ -28,6 +28,17 @@ test('creates isolated fixture roots and cleans only its own temporary directory
   }
 });
 
+test('shares the cleanup promise while removal is in flight', async () => {
+  const fixture = await createFixture();
+  try {
+    const firstCleanup = fixture.cleanup();
+    assert.strictEqual(fixture.cleanup(), firstCleanup);
+    await firstCleanup;
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('snapshots nested file paths and exact bytes deterministically', async () => {
   const fixture = await createFixture();
   try {
@@ -63,22 +74,43 @@ test('captures exit code, stdout, and stderr from a real child process', async (
   }
 });
 
+test('rejects and reaps a child process that exceeds its timeout', async () => {
+  const fixture = await createFixture();
+  try {
+    await assert.rejects(
+      runCommand({
+        file: process.execPath,
+        args: [cliPath, '--root', fixture.consumerRoot, '--delay', '200'],
+        cwd: fixture.consumerRoot,
+        timeoutMs: 20,
+      }),
+      (error) => {
+        assert.equal(error.code, 'ETIMEDOUT');
+        assert.match(error.message, /timed out after 20ms/);
+        return true;
+      },
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('rejects empty and multiple JSON documents', () => {
   assert.throws(() => parseJsonOutput(''));
   assert.throws(() => parseJsonOutput('{"one":1}\n{"two":2}'));
 });
 
-test('proves a read-only command leaves the Consumer snapshot byte-for-byte unchanged', async () => {
+test('proves a read-only command leaves the full fixture byte-for-byte unchanged', async () => {
   const fixture = await createFixture();
   try {
-    const before = await snapshotFiles(fixture.consumerRoot);
+    const before = await snapshotFiles(fixture.root);
     const result = await runCommand({
       file: process.execPath,
       args: [cliPath, '--root', fixture.consumerRoot],
       cwd: fixture.consumerRoot,
     });
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(await snapshotFiles(fixture.consumerRoot), before);
+    assert.deepEqual(await snapshotFiles(fixture.root), before);
   } finally {
     await fixture.cleanup();
   }

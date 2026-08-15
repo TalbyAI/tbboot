@@ -93,7 +93,7 @@ Expected: FAIL because `test/prototype.test.mjs` has not been created yet, but n
 - Create: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
-- `createFixture() -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory.
+- `createFixture() -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory and shares one in-flight cleanup promise, retrying after a failed removal.
 - `snapshotFiles(root) -> Promise<Array<{ path, bytes }>>` recursively records sorted relative file paths and `Buffer` contents.
 
 - [ ] **Step 1: Write the failing lifecycle and snapshot tests.**
@@ -152,16 +152,19 @@ const fixtureRoot = join(here, 'fixture');
 export async function createFixture() {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-12-'));
   await cp(fixtureRoot, root, { recursive: true });
-  let cleaned = false;
+  let cleanupPromise;
   return {
     root,
     consumerRoot: join(root, 'consumer'),
     sourceRoot: join(root, 'source'),
-    cleanup: async () => {
-      if (!cleaned) {
-        cleaned = true;
-        await rm(root, { recursive: true, force: true });
+    cleanup: () => {
+      if (!cleanupPromise) {
+        cleanupPromise = rm(root, { recursive: true, force: true }).catch((error) => {
+          cleanupPromise = undefined;
+          throw error;
+        });
       }
+      return cleanupPromise;
     },
   };
 }
@@ -202,7 +205,7 @@ Expected: 2 passing tests and 0 failures.
 - Modify: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
-- `runCommand({ file, args = [], cwd, env }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell and does not merge streams.
+- `runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell, does not merge streams, and terminates/reaps a child that exceeds the timeout before rejecting with `ETIMEDOUT`.
 - `parseJsonOutput(stdout) -> unknown` parses exactly one non-empty JSON document.
 
 - [ ] **Step 1: Write failing process, JSON, and read-only tests.**
@@ -227,22 +230,39 @@ test('captures exit code, stdout, and stderr from a real child process', async (
   }
 });
 
+test('rejects and reaps a child process that exceeds its timeout', async () => {
+  const fixture = await createFixture();
+  try {
+    await assert.rejects(
+      runCommand({
+        file: process.execPath,
+        args: [cliPath, '--root', fixture.consumerRoot, '--delay', '200'],
+        cwd: fixture.consumerRoot,
+        timeoutMs: 20,
+      }),
+      (error) => error.code === 'ETIMEDOUT',
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('rejects empty and multiple JSON documents', () => {
   assert.throws(() => parseJsonOutput(''));
   assert.throws(() => parseJsonOutput('{"one":1}\n{"two":2}'));
 });
 
-test('proves a read-only command leaves the Consumer snapshot byte-for-byte unchanged', async () => {
+test('proves a read-only command leaves the full fixture byte-for-byte unchanged', async () => {
   const fixture = await createFixture();
   try {
-    const before = await snapshotFiles(fixture.consumerRoot);
+    const before = await snapshotFiles(fixture.root);
     const result = await runCommand({
       file: process.execPath,
       args: [cliPath, '--root', fixture.consumerRoot],
       cwd: fixture.consumerRoot,
     });
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(await snapshotFiles(fixture.consumerRoot), before);
+    assert.deepEqual(await snapshotFiles(fixture.root), before);
   } finally {
     await fixture.cleanup();
   }
@@ -262,7 +282,10 @@ Append these helpers to `harness.mjs`:
 ```js
 import { spawn } from 'node:child_process';
 
-export function runCommand({ file, args = [], cwd, env }) {
+export function runCommand({ file, args = [], cwd, env, timeoutMs = 30000 }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('timeoutMs must be a positive finite number');
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
       cwd,
@@ -271,12 +294,38 @@ export function runCommand({ file, args = [], cwd, env }) {
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let timeoutError;
+    let timeoutId;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      callback(value);
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('error', reject);
-    child.on('close', (exitCode) => resolve({ exitCode, stdout, stderr }));
+    child.on('error', (error) => {
+      if (!timedOut) finish(reject, error);
+    });
+    child.on('close', (exitCode) => {
+      if (timedOut) {
+        finish(reject, timeoutError);
+      } else {
+        finish(resolve, { exitCode, stdout, stderr });
+      }
+    });
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutError = Object.assign(
+        new Error(`command timed out after ${timeoutMs}ms`),
+        { code: 'ETIMEDOUT', timeoutMs },
+      );
+      child.kill();
+    }, timeoutMs);
   });
 }
 
@@ -297,6 +346,8 @@ const value = (name, fallback = undefined) => {
 };
 
 const root = value('--root');
+const delay = Number(value('--delay', '0'));
+if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 process.stderr.write('probe stderr\n');
 process.stdout.write(`${JSON.stringify({
   status: 'ok',
