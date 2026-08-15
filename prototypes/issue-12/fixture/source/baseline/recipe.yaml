@@ -1,0 +1,5 @@
+schemaVersion: 1
+steps:
+  - type: file
+    input: files/hello.txt
+    target: generated/hello.txt
