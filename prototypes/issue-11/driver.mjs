@@ -2,7 +2,14 @@ import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runHandler } from './runner.mjs';
 
-const valueFlags = new Set(['--runtime', '--script', '--request', '--timeout-ms', '--cancel-after-ms', '--cancel-when-file']);
+const valueFlags = new Map([
+  ['--runtime', 'runtime'],
+  ['--script', 'script'],
+  ['--request', 'request'],
+  ['--timeout-ms', 'timeoutMs'],
+  ['--cancel-after-ms', 'cancelAfterMs'],
+  ['--cancel-when-file', 'cancelWhenFile'],
+]);
 
 function positiveInteger(value, flag) {
   if (!/^\d+$/.test(value) || Number(value) <= 0) throw new Error(`${flag} must be a positive integer`);
@@ -13,18 +20,19 @@ function parseArgs(argv) {
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (!valueFlags.has(flag)) throw new Error(`Unknown or misplaced argument: ${flag}`);
+    const name = valueFlags.get(flag);
+    if (!name) throw new Error(`Unknown or misplaced argument: ${flag}`);
     const value = argv[++index];
     if (value == null || value.startsWith('--')) throw new Error(`${flag} requires a value`);
-    if (flag === '--timeout-ms' || flag === '--cancel-after-ms') options[flag.slice(2).replaceAll('-', '')] = positiveInteger(value, flag);
-    else options[flag.slice(2).replaceAll('-', '')] = value;
+    if (flag === '--timeout-ms' || flag === '--cancel-after-ms') options[name] = positiveInteger(value, flag);
+    else options[name] = value;
   }
 
   if (!['node', 'pwsh'].includes(options.runtime)) throw new Error('--runtime must be node or pwsh');
   if (!options.script) throw new Error('--script is required');
   if (options.request == null) throw new Error('--request is required');
-  if (options.timeoutms == null) throw new Error('--timeout-ms is required');
-  if (options.cancelafterm && options.cancelwhenfile) throw new Error('Use only one cancellation hook');
+  if (options.timeoutMs == null) throw new Error('--timeout-ms is required');
+  if (options.cancelAfterMs && options.cancelWhenFile) throw new Error('Use only one cancellation hook');
 
   try {
     options.request = JSON.parse(options.request);
@@ -32,7 +40,7 @@ function parseArgs(argv) {
     throw new Error('--request must be valid JSON', { cause });
   }
   options.script = resolve(options.script);
-  if (options.cancelwhenfile) options.cancelwhenfile = resolve(options.cancelwhenfile);
+  if (options.cancelWhenFile) options.cancelWhenFile = resolve(options.cancelWhenFile);
   return options;
 }
 
@@ -50,11 +58,11 @@ async function main(argv) {
   let cancelTimer;
   let cancelWatcher;
   process.once('SIGINT', cancel);
-  if (options.cancelafterm) cancelTimer = setTimeout(cancel, options.cancelafterm);
-  if (options.cancelwhenfile) {
+  if (options.cancelAfterMs) cancelTimer = setTimeout(cancel, options.cancelAfterMs);
+  if (options.cancelWhenFile) {
     cancelWatcher = setInterval(async () => {
       try {
-        await access(options.cancelwhenfile);
+        await access(options.cancelWhenFile);
         cancel();
       } catch {}
     }, 25);
@@ -66,7 +74,7 @@ async function main(argv) {
       runtime: options.runtime,
       script: options.script,
       request: options.request,
-      timeoutMs: options.timeoutms,
+      timeoutMs: options.timeoutMs,
       signal: controller.signal,
     });
     if (outcome.stderr) process.stderr.write(outcome.stderr);

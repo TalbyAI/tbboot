@@ -96,6 +96,21 @@ test('rejects malformed results and non-zero child exits', async () => {
   );
 });
 
+test('maps an unavailable executable to spawn-failed with its original code', async () => {
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'Path';
+  const originalPath = process.env[pathKey];
+  process.env[pathKey] = '';
+  try {
+    await assert.rejects(
+      runHandler({ runtime: 'pwsh', content: "return", request: {} }),
+      (error) => error.code === 'spawn-failed' && error.cause?.code === 'ENOENT',
+    );
+  } finally {
+    if (originalPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = originalPath;
+  }
+});
+
 test('timeout kills the root, child, and grandchild', { skip: process.platform === 'win32' && process.arch === 'x64' ? false : 'Windows x64-only process-tree test' }, async () => {
   const pidFile = join(tmpdir(), `tbboot-issue-11-pids-${randomUUID()}.json`);
   await assert.rejects(

@@ -80,10 +80,28 @@ export async function runHandler({ runtime, script, content, request, cwd, timeo
   };
 
   try {
-    const outcome = await outcomePromise;
+    let outcome;
+    if (stopPromise) {
+      const terminationResult = stopPromise.then(
+        () => ({ ok: true }),
+        (error) => ({ ok: false, error }),
+      );
+      const first = await Promise.race([
+        outcomePromise.then((value) => ({ type: 'close', value })),
+        terminationResult.then((value) => ({ type: 'termination', value })),
+      ]);
+      if (first.type === 'termination' && !first.value.ok) {
+        cleanup();
+        throw first.value.error;
+      }
+      outcome = first.type === 'close' ? first.value : await outcomePromise;
+      const completedTermination = await terminationResult;
+      if (!completedTermination.ok) throw completedTermination.error;
+    } else {
+      outcome = await outcomePromise;
+    }
     cleanup();
     if (stopPromise) {
-      await stopPromise;
       throw runnerError(reason, outcome);
     }
     if (outcome.spawnError) {
