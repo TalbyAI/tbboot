@@ -108,3 +108,26 @@ export function resolveSelector(repoPath, selector) {
   }
   throw new TypeError('Git selector must contain ref or from/to');
 }
+
+function selectorCandidates(repoPath, selector) {
+  if (selector && typeof selector === 'object' && 'ref' in selector) {
+    const resolved = resolveRef(repoPath, selector.ref);
+    return [{ revision: resolved.revision, refs: [resolved.ref] }];
+  }
+  if (selector && typeof selector === 'object' && 'from' in selector && 'to' in selector) {
+    return rangeCandidates(repoPath, selector);
+  }
+  throw new TypeError('Git selector must contain ref or from/to');
+}
+
+export function intersectSelectors(repoPath, selectors) {
+  if (!Array.isArray(selectors) || selectors.length === 0) {
+    throw new TypeError('At least one Git selector is required');
+  }
+  let common = selectorCandidates(repoPath, selectors[0]);
+  for (const selector of selectors.slice(1)) {
+    const allowed = new Set(selectorCandidates(repoPath, selector).map(({ revision }) => revision));
+    common = common.filter(({ revision }) => allowed.has(revision));
+  }
+  return chooseCandidate(repoPath, common);
+}

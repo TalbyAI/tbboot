@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createFixtureRepo, removeFixtureRepo } from './fixture.mjs';
-import { GitSelectorError, resolveSelector } from '../proposed/git-source.mjs';
+import { GitSelectorError, intersectSelectors, resolveSelector } from '../proposed/git-source.mjs';
 
 async function withFixture(callback) {
   const fixture = await createFixtureRepo();
@@ -46,5 +46,25 @@ test('rejects a range whose lower bound is not an ancestor', () => withFixture((
   assert.throws(
     () => resolveSelector(repoPath, { from: 'v2', to: 'v1' }),
     (error) => error instanceof GitSelectorError && error.code === 'git-range-invalid',
+  );
+}));
+
+test('reports an empty selector intersection', () => withFixture(({ repoPath }) => {
+  assert.throws(
+    () => intersectSelectors(repoPath, [{ ref: 'v1' }, { ref: 'v2' }]),
+    (error) => error instanceof GitSelectorError && error.code === 'git-selector-incompatible',
+  );
+}));
+
+test('reports several incomparable maximal revisions', () => withFixture(({ repoPath, revisions }) => {
+  assert.throws(
+    () => intersectSelectors(repoPath, [
+      { from: 'v1', to: 'range-a' },
+      { from: 'v1', to: 'range-b' },
+    ]),
+    (error) => error instanceof GitSelectorError
+      && error.code === 'git-selector-ambiguous'
+      && error.details.revisions.includes(revisions.x)
+      && error.details.revisions.includes(revisions.y),
   );
 }));
