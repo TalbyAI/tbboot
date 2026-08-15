@@ -379,6 +379,24 @@ test('reports an empty selector intersection', () => withFixture(({ repoPath }) 
   );
 }));
 
+test('intersects refs that identify the same revision', () => withFixture(({ repoPath, revisions }) => {
+  const result = intersectSelectors(repoPath, [
+    { ref: 'v2' },
+    { ref: 'refs/heads/line-x' },
+  ]);
+  assert.equal(result.revision, revisions.x);
+}));
+
+test('reports an empty intersection between ranges', () => withFixture(({ repoPath }) => {
+  assert.throws(
+    () => intersectSelectors(repoPath, [
+      { from: 'line-x', to: 'range-a' },
+      { from: 'line-y', to: 'range-b' },
+    ]),
+    (error) => error instanceof GitSelectorError && error.code === 'git-selector-incompatible',
+  );
+}));
+
 test('reports several incomparable maximal revisions', () => withFixture(({ repoPath, revisions }) => {
   assert.throws(
     () => intersectSelectors(repoPath, [
@@ -434,7 +452,7 @@ Refactor `resolveSelector` to call `chooseCandidate` for range selectors while r
 
 Run: `node --test prototypes/issue-10/test/prototype.test.mjs`
 
-Expected: 7 passing tests, 0 failures, including the empty-intersection and incomparable-maxima cases.
+Expected: 9 passing tests, 0 failures, including the successful intersection, empty range intersection, and incomparable-maxima cases.
 
 - [ ] **Step 5: Commit intersections**
 
@@ -470,7 +488,7 @@ Expected: exit code 0 and no syntax errors.
 
 Run: `npm test --prefix prototypes/issue-10`
 
-Expected: exit code 0, 7 tests passing, 0 failures.
+Expected: exit code 0, 9 tests passing, 0 failures.
 
 - [ ] **Step 4: Inspect the final diff**
 
@@ -497,7 +515,7 @@ npm run check --prefix prototypes/issue-10
 npm test --prefix prototypes/issue-10
 ```
 
-Expected: both commands exit 0; the test output reports 7 passing tests.
+Expected: both commands exit 0; the test output reports 9 passing tests.
 
 - [ ] **Step 2: Review the branch against the issue and design**
 
