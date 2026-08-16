@@ -38,11 +38,11 @@ Se añadirán `@biomejs/biome` y `markdownlint-cli2` como dependencias de
 desarrollo.
 
 Biome ejecutará únicamente lint sobre `src/` y `test/`, con sus reglas
-recomendadas. No se activará el formateador de Biome ni se añadirá una orden de
-autofix.
+recomendadas. No se activará el formateador de Biome; el arreglo de lint será
+una operación explícita y local mediante un script separado.
 
 `markdownlint-cli2` revisará únicamente los documentos Markdown versionados
-relevantes:
+relevantes y ofrecerá un script local separado para aplicar sus fixes:
 
 - `AGENTS.md`;
 - `CONTEXT.md`;
@@ -71,14 +71,18 @@ en la configuración; no se desactivará globalmente el lint.
 ```json
 {
   "lint": "biome lint src test",
+  "lint:fix": "biome lint --write src test",
   "format:check": "markdownlint-cli2",
+  "format:md": "markdownlint-cli2 --fix",
   "build": "node --check src/cli.ts"
 }
 ```
 
 El lockfile se actualizará con `npm install --save-dev
 @biomejs/biome markdownlint-cli2`. `npm ci` será la instalación de CI y la
-fuente reproducible de las versiones resueltas.
+fuente reproducible de las versiones resueltas. `lint:fix` y `format:md` son
+operaciones opt-in para desarrollo local; no se ejecutarán en CI ni mediante
+hooks automáticos.
 
 ### Configuración de Biome
 
@@ -153,6 +157,8 @@ La implementación se validará con:
 
 ```powershell
 npm ci
+npm run lint:fix
+npm run format:md
 npm run lint
 npm run format:check
 npm run typecheck
@@ -175,7 +181,7 @@ También se comprobará que:
 ## Fuera de alcance
 
 - Reformatear todo el código con Biome.
-- Añadir autofix o hooks de pre-commit.
+- Ejecutar fixes automáticamente en CI o mediante hooks de pre-commit.
 - Ejecutar lint sobre `prototypes/`, `schemas/` o documentos fuera del alcance
   Markdown aprobado.
 - Añadir cobertura, análisis de seguridad, publicación o despliegue.
