@@ -2,9 +2,43 @@
 
 ## Agent skills
 
-### Issue tracker
+### Issue tracker and derived design artifacts
 
-Issues y especificaciones viven en GitHub Issues; usar `gh`. See `docs/agents/issue-tracker.md`.
+Las GitHub Issues son la fuente autoritativa de requisitos, alcance, criterios
+de aceptación, restricciones, decisiones aprobadas y elementos fuera de
+alcance. Usar `gh` para las operaciones sobre issues. See
+`docs/agents/issue-tracker.md`.
+
+Superpowers puede crear y commitear documentos de diseño y planes de
+implementación bajo `docs/superpowers/`. Son artefactos derivados y revisables:
+
+- el diseño registra la solución conceptual obtenida mediante la entrevista;
+- el plan deriva su secuencia de implementación del diseño aprobado.
+
+Estos artefactos pueden desarrollar detalles de implementación, pero no pueden
+cambiar silenciosamente el Issue. Si la investigación o el diseño cambian el
+alcance, los requisitos, los criterios de aceptación, las restricciones, los
+elementos fuera de alcance, el comportamiento observable, la compatibilidad,
+la seguridad, la persistencia u otra decisión con impacto duradero, actualizar
+el Issue correspondiente antes de continuar y registrar allí el hallazgo o la
+decisión relevante usando `gh`.
+
+Las decisiones internas de implementación —como estructura de archivos,
+extracción de helpers, organización de pruebas o nombres— no requieren
+actualizar el Issue salvo que revelen un cambio en las categorías anteriores.
+
+El Issue registra los requisitos y decisiones resultantes, no un enlace directo
+al diseño ni al plan. El diseño y el plan pueden identificar el Issue del que
+derivan, pero el Issue debe seguir siendo comprensible de forma independiente.
+
+Los archivos HTML del árbol de documentación son visualizaciones enriquecidas
+de documentos conceptuales existentes. Son artefactos de presentación y no son
+autoritativos en ningún sentido. Deben identificar el documento conceptual o
+Issue que representan. Si una visualización HTML difiere de su fuente
+conceptual, prevalecen la fuente conceptual y el Issue.
+
+Cuando se detecte un cambio significativo en el diseño, actualizar primero el
+Issue y después revisar el diseño y regenerar el plan cuando sea necesario.
 
 ### Triage labels
 
