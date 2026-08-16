@@ -156,17 +156,19 @@ async function snapshotTree(...roots) {
 async function runReadOnlyCommand(fixture, command) {
   const roots = [fixture.consumerRoot, fixture.sourceRoot, fixture.profileRoot];
   const before = await snapshotTree(...roots);
-  const result = await runCommand({
-    ...command,
-    env: {
-      ...command.env,
-      USERPROFILE: fixture.profileRoot,
-      HOME: fixture.profileRoot,
-    },
-  });
-  const after = await snapshotTree(...roots);
-  assert.deepEqual(after, before, 'read-only process modified a watched tree');
-  return result;
+  try {
+    return await runCommand({
+      ...command,
+      env: {
+        ...command.env,
+        USERPROFILE: fixture.profileRoot,
+        HOME: fixture.profileRoot,
+      },
+    });
+  } finally {
+    const after = await snapshotTree(...roots);
+    assert.deepEqual(after, before, 'read-only process modified a watched tree');
+  }
 }
 
 test('unknown arguments return 2 and print usage only on stderr', async () => {
@@ -714,6 +716,32 @@ test('read-only process helper rejects filesystem writes', async () => {
         cwd: projectRoot,
       }),
       { name: 'AssertionError' },
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('read-only process helper checks writes when the command rejects', async () => {
+  const fixture = await createFixture();
+  try {
+    const target = join(fixture.consumerRoot, 'generated', 'unexpected.txt');
+    const script = [
+      `require('node:fs').writeFileSync(${JSON.stringify(target)}, 'unexpected\\n')`,
+      'setInterval(() => {}, 1000)',
+    ].join(';');
+    await assert.rejects(
+      () => runReadOnlyCommand(fixture, {
+        file: process.execPath,
+        args: ['-e', script],
+        cwd: projectRoot,
+        timeoutMs: 100,
+      }),
+      (error) => {
+        assert.equal(error.name, 'AssertionError');
+        assert.match(error.message, /read-only process modified/);
+        return true;
+      },
     );
   } finally {
     await fixture.cleanup();
