@@ -8,6 +8,10 @@
 
 **Tech Stack:** Node `>=24.12 <25`, ESM/NodeNext, native `.ts` execution with Node type stripping, local `typescript`, local `@types/node`, `ajv`, `yaml`, and Nodeâ€™s built-in test runner.
 
+TypeScript 7 requires `--ignoreConfig` when a focused compiler invocation
+names source files alongside the repository `tsconfig.json`; the public
+project check continues to use `tsconfig.json` through `npm run typecheck`.
+
 ## Global Constraints
 
 - `npm run typecheck` is the public command and must execute TypeScript without emitting files.
@@ -293,7 +297,7 @@ The manifest and source branches must continue to support `reservedDiagnostics`â
 Run:
 
 ```powershell
-npx tsc --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --esModuleInterop --types node src/contract.ts
+npx tsc --ignoreConfig --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --esModuleInterop --types node src/contract.ts
 npm run check
 npm test
 git diff --check
@@ -400,7 +404,7 @@ Declare `runDoctor(root: string): Promise<DoctorResult>`. Type the manifest resu
 Run:
 
 ```powershell
-npx tsc --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --esModuleInterop --types node src/contract.ts src/doctor.ts
+npx tsc --ignoreConfig --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --esModuleInterop --types node src/contract.ts src/doctor.ts
 npm run check
 npm test
 git diff --check
