@@ -4,13 +4,18 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { runDoctor } from './doctor.ts';
+import type { DoctorEnvelope } from './doctor.ts';
 
 const usage = 'usage: tbboot doctor [--root <consumer-root>] [--json]';
 
-function parseArgs(argv, cwd) {
+type ParseResult =
+  | { ok: true; root: string; json: boolean }
+  | { ok: false; message: string };
+
+function parseArgs(argv: string[], cwd: string): ParseResult {
   if (argv[0] !== 'doctor') return { ok: false, message: 'Expected the doctor command' };
 
-  let root;
+  let root: string | undefined;
   let json = false;
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -31,7 +36,7 @@ function parseArgs(argv, cwd) {
   return { ok: true, root: root ?? resolve(cwd), json };
 }
 
-function renderHuman(envelope) {
+function renderHuman(envelope: DoctorEnvelope): string {
   const lines = [`status: ${envelope.status}`];
   for (const action of envelope.actions) {
     lines.push(`${action.state}: ${action.type} ${action.target} (${action.source}/${action.recipe} step ${action.step})`);
@@ -46,7 +51,7 @@ function renderHuman(envelope) {
   return `${lines.join('\n')}\n`;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const options = parseArgs(argv, process.cwd());
   if (!options.ok) {
     process.stderr.write(`${options.message}\n${usage}\n`);
@@ -59,7 +64,8 @@ export async function main(argv = process.argv.slice(2)) {
   return result.exitCode;
 }
 
-if (process.argv[1]
-  && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+const entrypoint = process.argv[1];
+if (entrypoint
+  && realpathSync(entrypoint) === realpathSync(fileURLToPath(import.meta.url))) {
   main().then((code) => { process.exitCode = code; });
 }
