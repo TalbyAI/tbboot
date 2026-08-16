@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tbboot doctor · Issue #13</title>
+  <style>
+    :root {
+      --ink: #19212b;
+      --muted: #667386;
+      --line: #d9e1e8;
+      --paper: #f7f9fb;
+      --card: #ffffff;
+      --blue: #246bce;
+      --blue-soft: #eaf2ff;
+      --teal: #087f75;
+      --teal-soft: #e5f6f3;
+      --amber: #9a5b00;
+      --amber-soft: #fff3d6;
+      --red: #b42318;
+      --red-soft: #ffebe9;
+      --shadow: 0 10px 30px rgba(24, 43, 61, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1180px; margin: auto; padding: 42px 22px 70px; }
+    h1, h2, p { margin-top: 0; }
+    h1 { max-width: 760px; margin-bottom: 10px; font-size: clamp(2rem, 5vw, 4.5rem); line-height: .98; letter-spacing: -.06em; }
+    h2 { margin-bottom: 16px; font-size: 1.15rem; letter-spacing: -.02em; }
+    .kicker { margin-bottom: 14px; color: var(--blue); font-weight: 750; letter-spacing: .12em; text-transform: uppercase; font-size: .76rem; }
+    .lede { max-width: 720px; color: var(--muted); font-size: 1.08rem; }
+    .command { display: inline-block; margin: 22px 0 32px; padding: 11px 15px; border: 1px solid #bfd3ec; border-radius: 10px; background: #eef5ff; color: #154a91; font: 650 .95rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .grid { display: grid; gap: 16px; }
+    .two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); box-shadow: var(--shadow); }
+    .pad { padding: 22px; }
+    .section { margin-top: 18px; }
+    .section > h2 { padding-left: 2px; }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; overflow: hidden; }
+    .flow-step { position: relative; min-height: 136px; padding: 18px 15px; border-right: 1px solid var(--line); }
+    .flow-step:last-child { border-right: 0; }
+    .flow-step:not(:last-child)::after { content: "→"; position: absolute; z-index: 1; top: 50%; right: -11px; transform: translateY(-50%); width: 21px; height: 21px; border: 1px solid var(--line); border-radius: 50%; background: var(--card); color: var(--blue); text-align: center; line-height: 19px; font-weight: 800; }
+    .num { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-bottom: 13px; border-radius: 50%; background: var(--blue-soft); color: var(--blue); font-size: .78rem; font-weight: 800; }
+    .flow-step strong { display: block; margin-bottom: 5px; font-size: .95rem; }
+    .flow-step small { display: block; color: var(--muted); }
+    .boundary { display: flex; gap: 12px; align-items: flex-start; }
+    .boundary + .boundary { margin-top: 16px; }
+    .mark { flex: 0 0 auto; width: 12px; height: 12px; margin-top: 5px; border-radius: 50%; }
+    .read { background: var(--teal); }
+    .never { background: var(--red); }
+    .boundary strong { display: block; margin-bottom: 3px; }
+    .boundary span { color: var(--muted); }
+    .shape { margin: 0; padding: 15px; overflow: auto; border-radius: 10px; background: #17202b; color: #e6edf3; font: .86rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .shape .accent { color: #8bd5ff; }
+    .shape .good { color: #8de0c7; }
+    .shape .warn { color: #ffd27d; }
+    .shape .bad { color: #ff9c96; }
+    .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .state { padding: 15px; border: 1px solid var(--line); border-radius: 12px; }
+    .state h3 { margin: 0 0 9px; font-size: 1rem; }
+    .state p { margin: 7px 0 0; color: var(--muted); font-size: .9rem; }
+    .pill { display: inline-block; margin: 2px 3px 2px 0; padding: 3px 7px; border-radius: 999px; font-size: .74rem; font-weight: 750; }
+    .satisfied { color: var(--teal); background: var(--teal-soft); }
+    .missing { color: var(--amber); background: var(--amber-soft); }
+    .drift { color: var(--blue); background: var(--blue-soft); }
+    .conflict { color: var(--red); background: var(--red-soft); }
+    .route { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+    .route li { display: grid; grid-template-columns: 100px 1fr; gap: 12px; align-items: baseline; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
+    .route li:last-child { padding-bottom: 0; border-bottom: 0; }
+    .route b { color: var(--blue); font: .82rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .route span { color: var(--muted); }
+    .footer { margin-top: 24px; color: var(--muted); font-size: .84rem; }
+    @media (max-width: 850px) { .flow { grid-template-columns: 1fr; } .flow-step { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); } .flow-step:last-child { border-bottom: 0; } .flow-step:not(:last-child)::after { top: auto; right: 50%; bottom: -11px; transform: translateX(50%) rotate(90deg); } }
+    @media (max-width: 680px) { .two, .three, .state-grid { grid-template-columns: 1fr; } main { padding-top: 28px; } .route li { grid-template-columns: 1fr; gap: 2px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="kicker">Issue #13 · diseño productivo</div>
+    <h1><code>doctor</code> mira, valida y reporta.</h1>
+    <p class="lede">La primera CLI de tbboot inspecciona un Consumer repository y sus Sources locales. No instala, no corrige drift y no deja estado detrás.</p>
+    <div class="command">tbboot doctor [--root &lt;consumer-root&gt;] [--json]</div>
+
+    <section class="card flow">
+      <div class="flow-step"><span class="num">1</span><strong>Entrada</strong><small>Argumentos y raíz absoluta del Consumer repository.</small></div>
+      <div class="flow-step"><span class="num">2</span><strong>Contrato</strong><small>Lee y valida <code>tbboot.yaml</code> antes de resolver.</small></div>
+      <div class="flow-step"><span class="num">3</span><strong>Descubrimiento</strong><small>Solo provider <code>local</code>; Source y Recipes de primer nivel.</small></div>
+      <div class="flow-step"><span class="num">4</span><strong>Preflight</strong><small>Rutas seguras, orden de Steps, colisiones y Artifacts.</small></div>
+      <div class="flow-step"><span class="num">5</span><strong>Resultado</strong><small>Un envelope, salida humana o JSON, y exit code.</small></div>
+    </section>
+
+    <div class="grid two section">
+      <section class="card pad">
+        <h2>Frontera de seguridad</h2>
+        <div class="boundary"><i class="mark read"></i><div><strong>Lee</strong><span>Manifest, <code>source.yaml</code>, <code>recipe.yaml</code>, inputs del Source y targets del Consumer.</span></div></div>
+        <div class="boundary"><i class="mark never"></i><div><strong>Nunca escribe</strong><span>Artifacts, lockfile, <code>.tbboot</code>, trust store, cachés o metadatos. Tampoco ejecuta Git.</span></div></div>
+      </section>
+      <section class="card pad">
+        <h2>Resolución de rutas</h2>
+        <pre class="shape"><span class="accent">input</span>  = relativo a Recipe → dentro de Source
+<span class="accent">target</span> = relativo a raíz del Consumer repository
+
+realpath + symlinks
+  ├─ escape de Source   → conflict
+  └─ escape de Consumer → conflict</pre>
+      </section>
+    </div>
+
+    <section class="section">
+      <h2>La comprobación produce estados, no cambios</h2>
+      <div class="grid two">
+        <article class="card pad">
+          <h2>File</h2>
+          <div><span class="pill satisfied">satisfied</span> bytes idénticos</div>
+          <div><span class="pill missing">missing</span> target ausente</div>
+          <div><span class="pill drift">drift</span> existe, pero difiere</div>
+          <div><span class="pill conflict">conflict</span> input ausente, escape o colisión</div>
+          <p>Un File no puede compartir target con ningún otro escritor.</p>
+        </article>
+        <article class="card pad">
+          <h2>File Fragment</h2>
+          <div><span class="pill satisfied">satisfied</span> bloque completo e idéntico</div>
+          <div><span class="pill missing">missing</span> target o bloque ausente</div>
+          <div><span class="pill drift">drift</span> bloque existente diferente</div>
+          <div><span class="pill conflict">conflict</span> markers duplicados, incompletos o incompatibles</div>
+          <p>Varios fragments pueden compartir target si sus markers son distintos.</p>
+        </article>
+      </div>
+    </section>
+
+    <div class="grid two section">
+      <section class="card pad">
+        <h2>El envelope común</h2>
+        <pre class="shape">{
+  <span class="accent">"schemaVersion"</span>: 1,
+  <span class="accent">"command"</span>: <span class="good">"doctor"</span>,
+  <span class="accent">"status"</span>: <span class="warn">"ok"</span>,
+  <span class="accent">"changed"</span>: <span class="good">false</span>,
+  <span class="accent">"actions"</span>: [],
+  <span class="accent">"diagnostics"</span>: []
+}</pre>
+      </section>
+      <section class="card pad">
+        <h2>Cómo termina</h2>
+        <ul class="route">
+          <li><b>ok / 0</b><span>todos los Steps satisfechos</span></li>
+          <li><b>warning / 0</b><span>falla solo un Step optional</span></li>
+          <li><b>error / ≠0</b><span>falla un Step requerido o hay conflicto</span></li>
+          <li><b>stderr</b><span>logs auxiliares; en <code>--json</code>, stdout es un único JSON</span></li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card pad section">
+      <h2>Forma mental del flujo</h2>
+      <pre class="shape"><span class="accent">for</span> each manifest source:
+  reject provider != <span class="good">local</span>
+  source = read + validate(source.yaml)
+  <span class="accent">for</span> each first-level recipe in deterministic order:
+    recipe = read + validate(recipe.yaml)
+    <span class="accent">for</span> each ordered step:
+      resolve input + target safely
+      detect File / File Fragment state
+      append action + diagnostic
+aggregate severity → serialize once → exit</pre>
+    </section>
+
+    <p class="footer">Fuera de esta slice: Git, Source dependencies, Custom, uninstall, Catalogs y selección efectiva de Recipes. La implementación prevista cabe en <code>src/cli.ts</code>, <code>src/contract.ts</code> y <code>src/doctor.ts</code>.</p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,378 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tbboot.dev/schemas/contract-v1",
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "sourceRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/]|~(?:[\\\\/]|$)).+"
+    },
+    "repositoryRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/]|~(?:[\\\\/]|$))(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+"
+    },
+    "gitPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/]|~(?:[\\\\/]|$))(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))(?!.*[?*\\[\\]{}]).+"
+    },
+    "localLocator": {
+      "type": "object",
+      "required": ["path"],
+      "properties": { "path": { "$ref": "#/$defs/nonEmptyString" } },
+      "additionalProperties": false
+    },
+    "gitLocator": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/nonEmptyString" },
+        "path": { "$ref": "#/$defs/gitPath" }
+      },
+      "additionalProperties": false
+    },
+    "localSelector": { "type": "object", "maxProperties": 0, "additionalProperties": false },
+    "gitSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["ref"],
+          "properties": { "ref": { "$ref": "#/$defs/nonEmptyString" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["from", "to"],
+          "properties": {
+            "from": { "$ref": "#/$defs/nonEmptyString" },
+            "to": { "$ref": "#/$defs/nonEmptyString" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sourceReference": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["provider", "locator"],
+          "properties": {
+            "provider": { "const": "local" },
+            "locator": { "$ref": "#/$defs/localLocator" },
+            "selector": { "$ref": "#/$defs/localSelector" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["provider", "locator"],
+          "properties": {
+            "provider": { "const": "git" },
+            "locator": { "$ref": "#/$defs/gitLocator" },
+            "selector": { "$ref": "#/$defs/gitSelector" }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "discriminator": { "propertyName": "provider" }
+    },
+    "selectableSourceReference": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["provider", "locator"],
+          "properties": {
+            "provider": { "const": "local" },
+            "locator": { "$ref": "#/$defs/localLocator" },
+            "selector": { "$ref": "#/$defs/localSelector" },
+            "recipes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["provider", "locator"],
+          "properties": {
+            "provider": { "const": "git" },
+            "locator": { "$ref": "#/$defs/gitLocator" },
+            "selector": { "$ref": "#/$defs/gitSelector" },
+            "recipes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "discriminator": { "propertyName": "provider" }
+    },
+    "sourceDependency": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["name", "provider", "locator"],
+          "properties": {
+            "name": { "$ref": "#/$defs/nonEmptyString" },
+            "provider": { "const": "local" },
+            "locator": { "$ref": "#/$defs/localLocator" },
+            "selector": { "$ref": "#/$defs/localSelector" },
+            "recipes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["name", "provider", "locator"],
+          "properties": {
+            "name": { "$ref": "#/$defs/nonEmptyString" },
+            "provider": { "const": "git" },
+            "locator": { "$ref": "#/$defs/gitLocator" },
+            "selector": { "$ref": "#/$defs/gitSelector" },
+            "recipes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "discriminator": { "propertyName": "provider" }
+    },
+    "customOperation": {
+      "type": "object",
+      "required": ["runtime"],
+      "properties": {
+        "runtime": { "enum": ["node", "pwsh"] },
+        "selector": { "$ref": "#/$defs/nonEmptyString" },
+        "timeoutSeconds": { "$ref": "#/$defs/positiveInteger" },
+        "script": { "$ref": "#/$defs/sourceRelativePath" },
+        "content": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "oneOf": [
+        { "required": ["script"], "properties": { "script": true, "content": false } },
+        { "required": ["content"], "properties": { "script": false, "content": true } }
+      ],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "input", "target"],
+          "properties": {
+            "type": { "const": "file" },
+            "input": { "$ref": "#/$defs/sourceRelativePath" },
+            "target": { "$ref": "#/$defs/repositoryRelativePath" },
+            "optional": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "input", "target"],
+          "properties": {
+            "type": { "const": "file-fragment" },
+            "input": { "$ref": "#/$defs/sourceRelativePath" },
+            "target": { "$ref": "#/$defs/repositoryRelativePath" },
+            "optional": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "check"],
+          "properties": {
+            "type": { "const": "custom" },
+            "optional": { "type": "boolean" },
+            "check": { "$ref": "#/$defs/customOperation" },
+            "install": { "$ref": "#/$defs/customOperation" },
+            "uninstall": { "$ref": "#/$defs/customOperation" }
+          },
+          "dependencies": { "uninstall": ["install"] },
+          "additionalProperties": false
+        }
+      ],
+      "discriminator": { "propertyName": "type" }
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["source", "recipe"],
+      "properties": {
+        "source": { "$ref": "#/$defs/nonEmptyString" },
+        "recipe": { "$ref": "#/$defs/repositoryRelativePath" }
+      },
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["schemaVersion", "sources"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/selectableSourceReference" } }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": ["schemaVersion"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "dependencies": { "type": "array", "items": { "$ref": "#/$defs/sourceDependency" } }
+      },
+      "additionalProperties": false
+    },
+    "recipe": {
+      "type": "object",
+      "required": ["schemaVersion", "steps"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+        "requires": { "type": "array", "items": { "$ref": "#/$defs/requirement" } }
+      },
+      "additionalProperties": false
+    },
+    "catalog": {
+      "type": "object",
+      "required": ["schemaVersion", "entries"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "description", "keywords", "source"],
+            "properties": {
+              "title": { "$ref": "#/$defs/nonEmptyString" },
+              "description": { "$ref": "#/$defs/nonEmptyString" },
+              "keywords": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
+              "source": { "$ref": "#/$defs/sourceReference" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "lockEntry": {
+      "type": "object",
+      "required": ["source", "fingerprint"],
+      "properties": {
+        "source": { "$ref": "#/$defs/sourceReference" },
+        "revision": { "$ref": "#/$defs/nonEmptyString" },
+        "fingerprint": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "if": {
+        "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } },
+        "required": ["source"]
+      },
+      "then": { "required": ["revision"], "properties": { "revision": true } },
+      "else": { "properties": { "revision": false } },
+      "additionalProperties": false
+    },
+    "lockfile": {
+      "type": "object",
+      "required": ["schemaVersion", "sources"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/lockEntry" } }
+      },
+      "additionalProperties": false
+    },
+    "effect": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["source", "sourceFingerprint", "recipe", "step", "type", "target", "artifactFingerprint", "created"],
+          "properties": {
+            "source": { "$ref": "#/$defs/sourceReference" },
+            "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
+            "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
+            "step": { "$ref": "#/$defs/positiveInteger" },
+            "type": { "const": "file" },
+            "target": { "$ref": "#/$defs/repositoryRelativePath" },
+            "artifactFingerprint": { "$ref": "#/$defs/nonEmptyString" },
+            "created": { "type": "boolean" }
+          },
+          "if": { "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } }, "required": ["source"] },
+          "then": { "required": ["revision"], "properties": { "revision": true } },
+          "else": { "properties": { "revision": false } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["source", "sourceFingerprint", "recipe", "step", "type", "target", "marker", "artifactFingerprint"],
+          "properties": {
+            "source": { "$ref": "#/$defs/sourceReference" },
+            "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
+            "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
+            "step": { "$ref": "#/$defs/positiveInteger" },
+            "type": { "const": "file-fragment" },
+            "target": { "$ref": "#/$defs/repositoryRelativePath" },
+            "marker": { "$ref": "#/$defs/nonEmptyString" },
+            "artifactFingerprint": { "$ref": "#/$defs/nonEmptyString" }
+          },
+          "if": { "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } }, "required": ["source"] },
+          "then": { "required": ["revision"], "properties": { "revision": true } },
+          "else": { "properties": { "revision": false } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["source", "sourceFingerprint", "recipe", "step", "type", "uninstallSupported"],
+          "properties": {
+            "source": { "$ref": "#/$defs/sourceReference" },
+            "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
+            "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
+            "step": { "$ref": "#/$defs/positiveInteger" },
+            "type": { "const": "custom" },
+            "uninstallSupported": { "type": "boolean" }
+          },
+          "if": { "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } }, "required": ["source"] },
+          "then": { "required": ["revision"], "properties": { "revision": true } },
+          "else": { "properties": { "revision": false } },
+          "additionalProperties": false
+        }
+      ],
+      "discriminator": { "propertyName": "type" }
+    },
+    "state": {
+      "type": "object",
+      "required": ["schemaVersion", "effects"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "effects": { "type": "array", "items": { "$ref": "#/$defs/effect" } }
+      },
+      "additionalProperties": false
+    },
+    "trustEntry": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "$ref": "#/$defs/sourceReference" },
+        "revision": { "$ref": "#/$defs/nonEmptyString" },
+        "fingerprint": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "if": {
+        "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } },
+        "required": ["source"]
+      },
+      "then": { "required": ["revision"], "properties": { "revision": true, "fingerprint": false } },
+      "else": { "required": ["fingerprint"], "properties": { "revision": false, "fingerprint": true } },
+      "additionalProperties": false
+    },
+    "trust": {
+      "type": "object",
+      "required": ["schemaVersion", "sources"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/trustEntry" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}
