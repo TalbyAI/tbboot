@@ -16,7 +16,8 @@ function parseArgs(argv, cwd) {
       continue;
     }
     if (arg === '--root') {
-      if (root !== undefined || index + 1 >= argv.length || argv[index + 1].startsWith('--')) {
+      if (root !== undefined || index + 1 >= argv.length
+        || argv[index + 1].length === 0 || argv[index + 1].startsWith('--')) {
         return { ok: false, message: 'Missing or duplicate --root value' };
       }
       root = resolve(cwd, argv[++index]);

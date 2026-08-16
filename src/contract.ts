@@ -104,11 +104,19 @@ function reservedDiagnostics(kind, value, context) {
 export function validateDocument({ kind, text, document, source, recipe }) {
   if (!Object.hasOwn(validators, kind)) throw new TypeError(`Unsupported document kind: ${kind}`);
   const validator = validators[kind];
-  const yamlDocuments = parseAllDocuments(text, {
-    schema: 'core',
-    uniqueKeys: true,
-    version: '1.2',
-  });
+  let yamlDocuments;
+  try {
+    yamlDocuments = parseAllDocuments(text, {
+      schema: 'core',
+      uniqueKeys: true,
+      version: '1.2',
+    });
+  } catch (error) {
+    return {
+      value: undefined,
+      diagnostics: [diagnostic('yaml-parse-error', error.message, { document, source, recipe })],
+    };
+  }
 
   const yaml11Directive = yamlDocuments.some(({ directives }) => directives?.yaml?.version === '1.1');
   if (yaml11Directive || yamlDocuments.length !== 1 || yamlDocuments[0].errors.length > 0 || yamlDocuments[0].contents === null) {

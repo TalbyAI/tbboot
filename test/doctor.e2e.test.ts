@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { parseJsonOutput, runCommand } from '../prototypes/issue-12/harness.mjs';
@@ -41,6 +41,68 @@ async function createFixture() {
     sourceRoot,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
+}
+
+async function writeRecipe(sourceRoot, recipe, steps) {
+  const recipeRoot = join(sourceRoot, recipe);
+  await mkdir(recipeRoot, { recursive: true });
+  await writeFile(join(recipeRoot, 'recipe.yaml'), [
+    'schemaVersion: 1',
+    'steps:',
+    ...steps.flatMap((step) => [
+      `  - type: ${step.type ?? 'file'}`,
+      ...(step.input === undefined ? [] : [`    input: ${step.input}`]),
+      ...(step.target === undefined ? [] : [`    target: ${step.target}`]),
+      ...(step.optional === true ? ['    optional: true'] : []),
+      ...(step.type === 'custom' ? ['    check:', '      runtime: node', '      content: "return;"'] : []),
+    ]),
+    '',
+  ].join('\n'));
+  for (const [index, step] of steps.entries()) {
+    if (step.input !== undefined && step.inputContent !== undefined) {
+      const inputPath = join(recipeRoot, step.input);
+      await mkdir(dirname(inputPath), { recursive: true });
+      await writeFile(inputPath, step.inputContent);
+    }
+    if (step.input !== undefined && step.inputMissing === true) {
+      await rm(join(recipeRoot, step.input), { force: true });
+    }
+    void index;
+  }
+}
+
+async function runDoctor(fixture, ...args) {
+  const result = await runCommand({
+    file: process.execPath,
+    args: [cliPath, 'doctor', '--json', '--root', fixture.consumerRoot, ...args],
+    cwd: projectRoot,
+  });
+  assert.equal(result.stderr, '');
+  return { result, envelope: parseJsonOutput(result.stdout) };
+}
+
+async function snapshotTree(...roots) {
+  const snapshot = [];
+  async function visit(root, current) {
+    const entries = (await readdir(current, { withFileTypes: true }))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      const absolute = join(current, entry.name);
+      const path = relative(root, absolute).split(sep).join('/');
+      if (entry.isDirectory()) {
+        snapshot.push({ root, path, kind: 'directory' });
+        await visit(root, absolute);
+      } else {
+        snapshot.push({ root, path, kind: 'file', bytes: await readFile(absolute) });
+      }
+    }
+  }
+  for (const root of roots) await visit(root, root);
+  return snapshot.sort((left, right) => {
+    const a = `${left.root}/${left.path}`;
+    const b = `${right.root}/${right.path}`;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
 }
 
 test('unknown arguments return 2 and print usage only on stderr', async () => {
@@ -88,6 +150,345 @@ test('valid canonical fixture compiles and validates without contract errors', a
     assert.equal(envelope.status, 'ok');
     assert.equal(envelope.changed, false);
     assert.equal(envelope.diagnostics.some(({ code }) => code === 'schema-validation-failed'), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('discovers only first-level Recipes in lexical order and preserves Step order', async () => {
+  const fixture = await createFixture();
+  try {
+    await rm(join(fixture.sourceRoot, 'baseline'), { recursive: true });
+    await writeRecipe(fixture.sourceRoot, 'zulu', [
+      { input: 'files/one.txt', inputContent: 'one\n', target: 'generated/zulu-one.txt' },
+      { input: 'files/two.txt', inputContent: 'two\n', target: 'generated/zulu-two.txt' },
+    ]);
+    await writeRecipe(fixture.sourceRoot, 'alpha', [
+      { input: 'files/one.txt', inputContent: 'one\n', target: 'generated/alpha.txt' },
+    ]);
+    await mkdir(join(fixture.sourceRoot, 'nested', 'child'), { recursive: true });
+    await writeFile(join(fixture.sourceRoot, 'nested', 'child', 'recipe.yaml'), 'schemaVersion: 1\nsteps: []\n');
+
+    const { envelope } = await runDoctor(fixture);
+    assert.deepEqual(envelope.actions.map(({ recipe, step }) => `${recipe}/${step}`), [
+      'alpha/1', 'zulu/1', 'zulu/2',
+    ]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('rejects unsupported providers and duplicate normalized local Sources', async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), [
+      'schemaVersion: 1',
+      'sources:',
+      '  - provider: git',
+      '    locator:',
+      '      repository: https://example.invalid/recipes.git',
+      '  - provider: local',
+      '    locator:',
+      '      path: ../source',
+      '  - provider: local',
+      '    locator:',
+      '      path: ./../source',
+      '',
+    ].join('\n'));
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(envelope.diagnostics.map(({ code }) => code), [
+      'unsupported-source-provider', 'duplicate-source',
+    ]);
+    assert.equal(envelope.diagnostics[0].path, '/sources/0/provider');
+    assert.equal(envelope.diagnostics[1].path, '/sources/2/locator/path');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('missing input is a conflict and optional missing input is a warning', async () => {
+  const fixture = await createFixture();
+  try {
+    await rm(join(fixture.sourceRoot, 'baseline', 'files', 'hello.txt'));
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(envelope.actions.map(({ state }) => state), ['conflict']);
+    assert.equal(envelope.diagnostics[0].code, 'source-input-missing');
+
+    await writeFile(join(fixture.sourceRoot, 'baseline', 'recipe.yaml'), [
+      'schemaVersion: 1',
+      'steps:',
+      '  - type: file',
+      '    input: files/hello.txt',
+      '    target: generated/hello.txt',
+      '    optional: true',
+      '',
+    ].join('\n'));
+    const optional = await runDoctor(fixture);
+    assert.equal(optional.result.exitCode, 0);
+    assert.equal(optional.envelope.status, 'warning');
+    assert.equal(optional.envelope.diagnostics[0].severity, 'warning');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('unsupported Custom Steps produce no action and follow optionality', async () => {
+  const fixture = await createFixture();
+  try {
+    await writeRecipe(fixture.sourceRoot, 'custom', [
+      { type: 'custom', optional: true },
+    ]);
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 0);
+    assert.equal(envelope.status, 'warning');
+    assert.equal(envelope.actions.length, 1);
+    assert.equal(envelope.diagnostics.at(-1).code, 'unsupported-step');
+    assert.equal(envelope.diagnostics.at(-1).severity, 'warning');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('rejects input and target symlink escapes', async (t) => {
+  const fixture = await createFixture();
+  try {
+    const outsideRoot = join(fixture.root, 'outside');
+    await mkdir(outsideRoot, { recursive: true });
+    try {
+      await writeFile(join(outsideRoot, 'input.txt'), 'outside\n');
+      await symlink(
+        join(outsideRoot, 'input.txt'),
+        join(fixture.sourceRoot, 'baseline', 'files', 'outside-link.txt'),
+      );
+      await writeFile(join(outsideRoot, 'target.txt'), 'outside\n');
+      await symlink(
+        join(outsideRoot, 'target.txt'),
+        join(fixture.consumerRoot, 'generated', 'outside-link.txt'),
+      );
+    } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EACCES') {
+        t.skip('symlinks are not available in this environment');
+        return;
+      }
+      throw error;
+    }
+
+    await writeRecipe(fixture.sourceRoot, 'escape', [
+      { input: 'files/outside-link.txt', target: 'generated/escape-input.txt' },
+      { input: 'files/hello.txt', inputContent: 'hello\n', target: 'generated/outside-link.txt' },
+    ]);
+    await symlink(
+      join(outsideRoot, 'input.txt'),
+      join(fixture.sourceRoot, 'escape', 'files', 'outside-link.txt'),
+    );
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(envelope.diagnostics.map(({ code }) => code), [
+      'source-input-escape', 'target-escape',
+    ]);
+    assert.deepEqual(envelope.actions
+      .filter(({ recipe }) => recipe === 'escape')
+      .map(({ state }) => state), ['conflict', 'conflict']);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('reserved selections and closed fields stop before Source discovery', async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), [
+      'schemaVersion: 1',
+      'sources:',
+      '  - provider: local',
+      '    locator:',
+      '      path: ../source',
+      '    recipes: []',
+      'unexpected: true',
+      '',
+    ].join('\n'));
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(envelope.diagnostics.map(({ code }) => code), ['schema-validation-failed']);
+    assert.equal(envelope.actions.length, 0);
+    assert.equal(envelope.diagnostics.some(({ code }) => code === 'source-read'), false);
+
+    await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), [
+      'schemaVersion: 1',
+      'sources:',
+      '  - provider: local',
+      '    locator:',
+      '      path: ../source',
+      '    recipes: []',
+      '',
+    ].join('\n'));
+    const reserved = await runDoctor(fixture);
+    assert.deepEqual(reserved.envelope.diagnostics.map(({ code }) => code), ['recipes-empty']);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('File states are satisfied, missing, or drift with required severity', async () => {
+  const fixture = await createFixture();
+  try {
+    const satisfied = await runDoctor(fixture);
+    assert.equal(satisfied.result.exitCode, 0);
+    assert.deepEqual(satisfied.envelope.actions.map(({ state }) => state), ['satisfied']);
+
+    await rm(join(fixture.consumerRoot, 'generated', 'hello.txt'));
+    const missing = await runDoctor(fixture);
+    assert.equal(missing.result.exitCode, 1);
+    assert.deepEqual(missing.envelope.actions.map(({ state }) => state), ['missing']);
+    assert.deepEqual(missing.envelope.diagnostics.map(({ code }) => code), ['file-missing']);
+
+    await writeFile(join(fixture.consumerRoot, 'generated', 'hello.txt'), 'drifted\n');
+    const drift = await runDoctor(fixture);
+    assert.equal(drift.result.exitCode, 1);
+    assert.deepEqual(drift.envelope.actions.map(({ state }) => state), ['drift']);
+    assert.deepEqual(drift.envelope.diagnostics.map(({ code }) => code), ['file-drift']);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('File and File Fragment writers sharing a target all conflict', async () => {
+  const fixture = await createFixture();
+  try {
+    await writeRecipe(fixture.sourceRoot, 'file-writer', [
+      { input: 'files/content.txt', inputContent: 'file\n', target: 'generated/shared.txt' },
+    ]);
+    await writeRecipe(fixture.sourceRoot, 'fragment-writer', [
+      { type: 'file-fragment', input: 'files/content.txt', inputContent: 'fragment\n', target: 'generated/shared.txt' },
+    ]);
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 1);
+    const participants = envelope.actions.filter(({ target }) => target === 'generated/shared.txt');
+    assert.deepEqual(participants.map(({ state }) => state), ['conflict', 'conflict']);
+    assert.deepEqual(
+      envelope.diagnostics.filter(({ code }) => code === 'file-target-collision').map(({ recipe }) => recipe),
+      ['file-writer', 'fragment-writer'],
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('File Fragment normalizes line endings and detects missing, drift, and satisfied blocks', async () => {
+  const fixture = await createFixture();
+  try {
+    const input = 'alpha\r\nbeta';
+    await writeRecipe(fixture.sourceRoot, 'fragment', [
+      { type: 'file-fragment', input: 'files/fragment.txt', inputContent: input, target: 'AGENTS.md' },
+    ]);
+    const missing = await runDoctor(fixture);
+    assert.equal(missing.result.exitCode, 1);
+    assert.deepEqual(missing.envelope.actions.filter(({ recipe }) => recipe === 'fragment')
+      .map(({ state }) => state), ['missing']);
+    assert.deepEqual(missing.envelope.diagnostics.filter(({ recipe }) => recipe === 'fragment')
+      .map(({ code }) => code), ['fragment-missing']);
+
+    await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
+      'before',
+      '<!-- managed-by: source/fragment -->',
+      'alpha',
+      'beta',
+      '<!-- end-managed-by: source/fragment -->',
+      'after',
+      '',
+    ].join('\r\n'));
+    const satisfied = await runDoctor(fixture);
+    assert.equal(satisfied.result.exitCode, 0);
+    assert.equal(satisfied.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'satisfied');
+
+    await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
+      'before',
+      '<!-- managed-by: source/fragment -->',
+      'changed',
+      '<!-- end-managed-by: source/fragment -->',
+      'after',
+    ].join('\n'));
+    const drift = await runDoctor(fixture);
+    assert.equal(drift.result.exitCode, 1);
+    assert.equal(drift.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'drift');
+    assert.equal(drift.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'fragment-drift');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('File Fragment structural failures conflict and distinct markers may share a target', async () => {
+  const fixture = await createFixture();
+  try {
+    await writeRecipe(fixture.sourceRoot, 'fragment', [
+      { type: 'file-fragment', input: 'files/fragment.txt', inputContent: 'body\n', target: 'AGENTS.md' },
+    ]);
+    await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
+      '<!-- managed-by: source/fragment -->',
+      'body',
+      '<!-- end-managed-by: source/fragment -->',
+      '<!-- managed-by: source/fragment -->',
+      'body',
+      '<!-- end-managed-by: source/fragment -->',
+    ].join('\n'));
+    const duplicate = await runDoctor(fixture);
+    assert.equal(duplicate.result.exitCode, 1);
+    assert.equal(duplicate.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
+    assert.deepEqual(duplicate.envelope.diagnostics.filter(({ recipe }) => recipe === 'fragment')
+      .map(({ code }) => code), ['fragment-marker-collision']);
+
+    await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
+      '<!-- managed-by: source/fragment -->',
+      'body',
+    ].join('\n'));
+    const incomplete = await runDoctor(fixture);
+    assert.equal(incomplete.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
+    assert.equal(incomplete.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'incomplete-fragment');
+
+    await writeRecipe(fixture.sourceRoot, 'other-fragment', [
+      { type: 'file-fragment', input: 'files/other.txt', inputContent: 'other\n', target: 'AGENTS.md' },
+    ]);
+    const distinct = await runDoctor(fixture);
+    assert.equal(distinct.envelope.diagnostics.some(({ code }) => code === 'fragment-marker-collision'), false);
+    assert.equal(distinct.envelope.diagnostics.some(({ code }) => code === 'file-target-collision'), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('optional Fragment failures warn, human output is actionable, and doctor is read-only', async () => {
+  const fixture = await createFixture();
+  const profileRoot = join(fixture.root, 'profile');
+  try {
+    await mkdir(profileRoot);
+    await writeRecipe(fixture.sourceRoot, 'optional-fragment', [
+      { type: 'file-fragment', input: 'files/missing.txt', target: 'AGENTS.md', optional: true },
+    ]);
+    const before = await snapshotTree(fixture.consumerRoot, fixture.sourceRoot, profileRoot);
+    const json = await runCommand({
+      file: process.execPath,
+      args: [cliPath, 'doctor', '--json', '--root', fixture.consumerRoot],
+      cwd: projectRoot,
+      env: { USERPROFILE: profileRoot, HOME: profileRoot },
+    });
+    assert.equal(json.exitCode, 0);
+    assert.equal(json.stderr, '');
+    assert.equal(parseJsonOutput(json.stdout).status, 'warning');
+
+    const human = await runCommand({
+      file: process.execPath,
+      args: [cliPath, 'doctor', '--root', fixture.consumerRoot],
+      cwd: projectRoot,
+      env: { USERPROFILE: profileRoot, HOME: profileRoot },
+    });
+    assert.equal(human.exitCode, 0);
+    assert.equal(human.stderr, '');
+    assert.match(human.stdout, /status: warning/);
+    assert.match(human.stdout, /source-input-missing/);
+    const after = await snapshotTree(fixture.consumerRoot, fixture.sourceRoot, profileRoot);
+    assert.deepEqual(after, before);
   } finally {
     await fixture.cleanup();
   }
