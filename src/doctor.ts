@@ -105,8 +105,11 @@ function artifactAction(descriptor) {
   };
 }
 
+const caseInsensitiveFs = process.platform === 'win32';
+
 function pathKey(value) {
-  return value.replaceAll('/', sep).toLowerCase();
+  const normalized = value.replaceAll('/', sep);
+  return caseInsensitiveFs ? normalized.toLowerCase() : normalized;
 }
 
 async function resolveLocalSource(root, locator, index, envelope) {

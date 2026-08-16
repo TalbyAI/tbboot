@@ -268,6 +268,63 @@ test('rejects unsupported providers and duplicate normalized local Sources', asy
   }
 });
 
+test('preserves case-distinct Source and target paths', async (t) => {
+  const fixture = await createFixture();
+  const probeRoot = join(fixture.root, 'case-probe');
+  try {
+    await mkdir(probeRoot);
+    await mkdir(join(probeRoot, 'A'));
+    try {
+      await mkdir(join(probeRoot, 'a'));
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        t.skip('filesystem is case-insensitive');
+        return;
+      }
+      throw error;
+    }
+    await rm(probeRoot, { recursive: true, force: true });
+
+    const upperSource = join(fixture.sourceRoot, 'CaseSource');
+    const lowerSource = join(fixture.sourceRoot, 'casesource');
+    for (const source of [upperSource, lowerSource]) {
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'source.yaml'), 'schemaVersion: 1\n');
+    }
+    await writeRecipe(upperSource, 'baseline', [
+      { input: 'files/content.txt', inputContent: 'upper\n', target: 'generated/Case.txt' },
+    ]);
+    await writeRecipe(lowerSource, 'baseline', [
+      { input: 'files/content.txt', inputContent: 'lower\n', target: 'generated/case.txt' },
+    ]);
+    await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), [
+      'schemaVersion: 1',
+      'sources:',
+      '  - provider: local',
+      '    locator:',
+      '      path: ../source/CaseSource',
+      '  - provider: local',
+      '    locator:',
+      '      path: ../source/casesource',
+      '',
+    ].join('\n'));
+    await writeFile(join(fixture.consumerRoot, 'generated', 'Case.txt'), 'upper\n');
+    await writeFile(join(fixture.consumerRoot, 'generated', 'case.txt'), 'lower\n');
+
+    const { result, envelope } = await runDoctor(fixture);
+    assert.equal(result.exitCode, 0);
+    assert.equal(envelope.actions.length, 2);
+    assert.deepEqual(envelope.actions.map(({ target }) => target).sort(), [
+      'generated/Case.txt', 'generated/case.txt',
+    ]);
+    assert.equal(envelope.diagnostics.some(({ code }) => [
+      'duplicate-source', 'file-target-collision',
+    ].includes(code)), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('missing input is a conflict and optional missing input is a warning', async () => {
   const fixture = await createFixture();
   try {
