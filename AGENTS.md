@@ -9,6 +9,25 @@ de aceptación, restricciones, decisiones aprobadas y elementos fuera de
 alcance. Usar `gh` para las operaciones sobre issues. See
 `docs/agents/issue-tracker.md`.
 
+### Publicación de contenido complejo en trackers externos
+
+Cuando se vaya a publicar contenido de varias líneas o con estructura Markdown,
+HTML, JSON, tablas, listas o bloques de código en un comentario, issue, pull
+request, work item u otro recurso de GitHub o Azure DevOps:
+
+- Preparar primero el contenido en un archivo temporal y revisarlo completo.
+- Publicarlo usando la opción basada en archivo de la CLI correspondiente, como
+  `--body-file` en `gh` o su equivalente en Azure DevOps.
+- Volver a leer el recurso remoto y verificar que su contenido coincide con el
+  archivo antes de dar la publicación por terminada.
+
+### Archivos temporales
+
+Cuando una tarea indique que se debe crear un archivo temporal, crear una
+carpeta única dentro de la carpeta temporal del sistema, fuera del repositorio
+actual, y guardar allí el archivo. Eliminar únicamente esa carpeta temporal
+cuando ya no sea necesaria.
+
 Superpowers puede crear y commitear documentos de diseño y planes de
 implementación bajo `docs/superpowers/`. Son artefactos derivados y revisables:
 
