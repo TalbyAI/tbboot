@@ -43,9 +43,9 @@ function installedBin() {
   return installedBinPromise;
 }
 
-async function runCli(args, options = {}) {
+async function runCli(fixture, args, options = {}) {
   const bin = await installedBin();
-  return runCommand({
+  return runReadOnlyCommand(fixture, {
     ...commandFor(bin, args),
     cwd: projectRoot,
     ...options,
@@ -60,9 +60,11 @@ async function createFixture() {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-13-'));
   const consumerRoot = join(root, 'consumer');
   const sourceRoot = join(root, 'source');
+  const profileRoot = join(root, 'profile');
   const recipeRoot = join(sourceRoot, 'baseline');
   await mkdir(join(consumerRoot, 'generated'), { recursive: true });
   await mkdir(join(recipeRoot, 'files'), { recursive: true });
+  await mkdir(profileRoot);
   await writeFile(join(consumerRoot, 'tbboot.yaml'), [
     'schemaVersion: 1',
     'sources:',
@@ -86,6 +88,7 @@ async function createFixture() {
     root,
     consumerRoot,
     sourceRoot,
+    profileRoot,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
 }
@@ -119,7 +122,7 @@ async function writeRecipe(sourceRoot, recipe, steps) {
 }
 
 async function runDoctor(fixture, ...args) {
-  const result = await runCli([
+  const result = await runCli(fixture, [
     'doctor', '--json', '--root', fixture.consumerRoot, ...args,
   ]);
   assert.equal(result.stderr, '');
@@ -150,18 +153,39 @@ async function snapshotTree(...roots) {
   });
 }
 
+async function runReadOnlyCommand(fixture, command) {
+  const roots = [fixture.consumerRoot, fixture.sourceRoot, fixture.profileRoot];
+  const before = await snapshotTree(...roots);
+  const result = await runCommand({
+    ...command,
+    env: {
+      ...command.env,
+      USERPROFILE: fixture.profileRoot,
+      HOME: fixture.profileRoot,
+    },
+  });
+  const after = await snapshotTree(...roots);
+  assert.deepEqual(after, before, 'read-only process modified a watched tree');
+  return result;
+}
+
 test('unknown arguments return 2 and print usage only on stderr', async () => {
-  const result = await runCli(['doctor', '--unknown']);
-  assert.equal(result.exitCode, 2);
-  assert.equal(result.stdout, '');
-  assert.match(result.stderr, /usage: tbboot doctor/);
+  const fixture = await createFixture();
+  try {
+    const result = await runCli(fixture, ['doctor', '--unknown']);
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /usage: tbboot doctor/);
+  } finally {
+    await fixture.cleanup();
+  }
 });
 
 test('invalid YAML returns one JSON diagnostic and no stderr', async () => {
   const fixture = await createFixture();
   try {
     await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), 'schemaVersion: [\n');
-    const result = await runCli(['doctor', '--json', '--root', fixture.consumerRoot]);
+    const result = await runCli(fixture, ['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(result.exitCode, 1);
     assert.equal(result.stderr, '');
     const envelope = parseJsonOutput(result.stdout);
@@ -176,7 +200,7 @@ test('invalid YAML returns one JSON diagnostic and no stderr', async () => {
 test('valid canonical fixture compiles and validates without contract errors', async () => {
   const fixture = await createFixture();
   try {
-    const result = await runCli(['doctor', '--json', '--root', fixture.consumerRoot]);
+    const result = await runCli(fixture, ['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, '');
     const envelope = parseJsonOutput(result.stdout);
@@ -202,7 +226,7 @@ test('linked CLI entrypoint resolves its real path before invoking main', async 
       }
       throw error;
     }
-    const result = await runCommand({
+    const result = await runReadOnlyCommand(fixture, {
       file: process.execPath,
       args: [link, 'doctor', '--json', '--root', fixture.consumerRoot],
       cwd: projectRoot,
@@ -593,29 +617,20 @@ test('File Fragment structural failures conflict and distinct markers may share 
 
 test('optional Fragment failures warn, human output is actionable, and doctor is read-only', async () => {
   const fixture = await createFixture();
-  const profileRoot = join(fixture.root, 'profile');
   try {
-    await mkdir(profileRoot);
     await writeRecipe(fixture.sourceRoot, 'optional-fragment', [
       { type: 'file-fragment', input: 'files/missing.txt', target: 'AGENTS.md', optional: true },
     ]);
-    const before = await snapshotTree(fixture.consumerRoot, fixture.sourceRoot, profileRoot);
-    const json = await runCli(['doctor', '--json', '--root', fixture.consumerRoot], {
-      env: { USERPROFILE: profileRoot, HOME: profileRoot },
-    });
+    const json = await runCli(fixture, ['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(json.exitCode, 0);
     assert.equal(json.stderr, '');
     assert.equal(parseJsonOutput(json.stdout).status, 'warning');
 
-    const human = await runCli(['doctor', '--root', fixture.consumerRoot], {
-      env: { USERPROFILE: profileRoot, HOME: profileRoot },
-    });
+    const human = await runCli(fixture, ['doctor', '--root', fixture.consumerRoot]);
     assert.equal(human.exitCode, 0);
     assert.equal(human.stderr, '');
     assert.match(human.stdout, /status: warning/);
     assert.match(human.stdout, /source-input-missing/);
-    const after = await snapshotTree(fixture.consumerRoot, fixture.sourceRoot, profileRoot);
-    assert.deepEqual(after, before);
   } finally {
     await fixture.cleanup();
   }
@@ -678,10 +693,28 @@ test('contract gates fail before discovery and omitted root uses cwd', async () 
       '    target: generated/hello.txt',
       '',
     ].join('\n'));
-    const omittedRoot = await runCli(['doctor', '--json'], { cwd: fixture.consumerRoot });
+    const omittedRoot = await runCli(fixture, ['doctor', '--json'], { cwd: fixture.consumerRoot });
     assert.equal(omittedRoot.exitCode, 0);
     assert.equal(omittedRoot.stderr, '');
     assert.equal(parseJsonOutput(omittedRoot.stdout).actions[0].state, 'satisfied');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('read-only process helper rejects filesystem writes', async () => {
+  const fixture = await createFixture();
+  try {
+    const target = join(fixture.consumerRoot, 'generated', 'unexpected.txt');
+    const script = `require('node:fs').writeFileSync(${JSON.stringify(target)}, 'unexpected\\n')`;
+    await assert.rejects(
+      () => runReadOnlyCommand(fixture, {
+        file: process.execPath,
+        args: ['-e', script],
+        cwd: projectRoot,
+      }),
+      { name: 'AssertionError' },
+    );
   } finally {
     await fixture.cleanup();
   }
