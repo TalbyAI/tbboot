@@ -1,7 +1,7 @@
 # Diseño: validación estática estricta de TypeScript
 
-**Issue:** #31  
-**Prerequisito de:** #27  
+**Issue:** #31
+**Prerequisito de:** #27
 **Fecha:** 2026-08-16
 
 ## Objetivo

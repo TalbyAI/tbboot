@@ -21,8 +21,8 @@ import type {
 
 type SupportedDocumentKind = Extract<DocumentKind, 'manifest' | 'source' | 'recipe'>;
 type DiagnosticContext = Pick<Diagnostic, 'document' | 'path' | 'source' | 'recipe' | 'step'>;
-type ArtifactType = Exclude<Step['type'], 'custom'>;
-type ArtifactState = 'satisfied' | 'missing' | 'drift' | 'conflict';
+export type ArtifactType = Exclude<Step['type'], 'custom'>;
+export type ArtifactState = 'satisfied' | 'missing' | 'drift' | 'conflict';
 
 export type ArtifactAction = {
   source: string;
@@ -37,7 +37,7 @@ export type DoctorEnvelope = {
   schemaVersion: 1;
   command: 'doctor';
   status: 'ok' | 'warning' | 'error';
-  changed: boolean;
+  changed: false;
   actions: ArtifactAction[];
   diagnostics: Diagnostic[];
   consumerRoot?: string;
