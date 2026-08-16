@@ -598,7 +598,7 @@ Create a unique directory under `$env:TEMP` outside the repository, write a one-
 $probeRoot = Join-Path $env:TEMP ('tbboot-typecheck-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $probeRoot | Out-Null
 Set-Content -Path (Join-Path $probeRoot 'probe.ts') -Value 'function probe(value) { return value; }'
-npx tsc --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext (Join-Path $probeRoot 'probe.ts')
+npx tsc --ignoreConfig --noEmit --strict --target ES2024 --module NodeNext --moduleResolution NodeNext (Join-Path $probeRoot 'probe.ts')
 $probeExit = $LASTEXITCODE
 Remove-Item -LiteralPath $probeRoot -Recurse -Force
 if ($probeExit -eq 0) { throw 'Expected strict TypeScript probe to fail' }
