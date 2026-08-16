@@ -447,6 +447,21 @@ test('File Fragment structural failures conflict and distinct markers may share 
     assert.equal(incomplete.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
     assert.equal(incomplete.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'incomplete-fragment');
 
+    await writeFile(join(fixture.consumerRoot, 'AGENTS.md'),
+      'ordinary <!-- managed-by: source/fragment --> text\n');
+    const inline = await runDoctor(fixture);
+    assert.equal(inline.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'missing');
+    assert.equal(inline.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'fragment-missing');
+
+    await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
+      '<!-- managed-by: source/fragment -->',
+      'body',
+      '<!-- end-managed-by: source/other -->',
+    ].join('\n'));
+    const mismatched = await runDoctor(fixture);
+    assert.equal(mismatched.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
+    assert.equal(mismatched.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'incomplete-fragment');
+
     await writeRecipe(fixture.sourceRoot, 'other-fragment', [
       { type: 'file-fragment', input: 'files/other.txt', inputContent: 'other\n', target: 'AGENTS.md' },
     ]);
@@ -489,6 +504,76 @@ test('optional Fragment failures warn, human output is actionable, and doctor is
     assert.match(human.stdout, /source-input-missing/);
     const after = await snapshotTree(fixture.consumerRoot, fixture.sourceRoot, profileRoot);
     assert.deepEqual(after, before);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('contract gates fail before discovery and omitted root uses cwd', async () => {
+  const fixture = await createFixture();
+  const validManifest = [
+    'schemaVersion: 1',
+    'sources:',
+    '  - provider: local',
+    '    locator:',
+    '      path: ../source',
+    '',
+  ].join('\n');
+  try {
+    const cases = [
+      ['sources: []\n', 'schema-version-missing'],
+      ['schemaVersion: 2\nsources: []\n', 'schema-version-unsupported'],
+      ['schemaVersion: 1\nschemaVersion: 1\nsources: []\n', 'yaml-parse-error'],
+      [`${validManifest}---\nschemaVersion: 1\nsources: []\n`, 'yaml-parse-error'],
+      [`%YAML 1.1\n---\n${validManifest}`, 'yaml-parse-error'],
+      [`${validManifest}unexpected: true\n`, 'schema-validation-failed'],
+    ];
+    for (const [text, code] of cases) {
+      await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), text);
+      const { result, envelope } = await runDoctor(fixture);
+      assert.equal(result.exitCode, 1, code);
+      assert.equal(envelope.diagnostics[0].code, code);
+      assert.equal(envelope.actions.length, 0);
+    }
+
+    await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), validManifest);
+    await writeFile(join(fixture.sourceRoot, 'source.yaml'), 'schemaVersion: 2\n');
+    const invalidSource = await runDoctor(fixture);
+    assert.equal(invalidSource.envelope.diagnostics[0].code, 'schema-version-unsupported');
+    assert.equal(invalidSource.envelope.actions.length, 0);
+
+    await writeFile(join(fixture.sourceRoot, 'source.yaml'), 'schemaVersion: 1\n');
+    await writeFile(join(fixture.sourceRoot, 'baseline', 'recipe.yaml'), [
+      'schemaVersion: 1',
+      'steps:',
+      '  - type: file',
+      '    input: files/hello.txt',
+      '    target: generated/hello.txt',
+      'requires:',
+      '  - source: other',
+      '    recipe: baseline',
+      '',
+    ].join('\n'));
+    const invalidRecipe = await runDoctor(fixture);
+    assert.equal(invalidRecipe.envelope.diagnostics[0].code, 'requires-not-supported');
+    assert.equal(invalidRecipe.envelope.actions.length, 0);
+
+    await writeFile(join(fixture.sourceRoot, 'baseline', 'recipe.yaml'), [
+      'schemaVersion: 1',
+      'steps:',
+      '  - type: file',
+      '    input: files/hello.txt',
+      '    target: generated/hello.txt',
+      '',
+    ].join('\n'));
+    const omittedRoot = await runCommand({
+      file: process.execPath,
+      args: [cliPath, 'doctor', '--json'],
+      cwd: fixture.consumerRoot,
+    });
+    assert.equal(omittedRoot.exitCode, 0);
+    assert.equal(omittedRoot.stderr, '');
+    assert.equal(parseJsonOutput(omittedRoot.stdout).actions[0].state, 'satisfied');
   } finally {
     await fixture.cleanup();
   }

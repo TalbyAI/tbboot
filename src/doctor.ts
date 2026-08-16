@@ -295,6 +295,7 @@ function exactMarkerLines(text, token, startMarker) {
 
 function fragmentState(targetText, inputText, marker) {
   const text = normalizeNewlines(targetText);
+  const lines = text.split('\n');
   const body = normalizeNewlines(inputText);
   const start = `<!-- managed-by: ${marker} -->`;
   const end = `<!-- end-managed-by: ${marker} -->`;
@@ -302,18 +303,36 @@ function fragmentState(targetText, inputText, marker) {
   const starts = exactMarkerLines(text, start, true);
   const ends = exactMarkerLines(text, end, false);
 
-  const hasOwnStartToken = text.split('\n').some((line, index, lines) => {
-    const trimmed = line.trimStart();
-    return line.includes(start) && trimmed.startsWith(start)
-      && (line.trim() !== start || index === lines.length - 1);
+  const managed = new Map();
+  for (const line of lines) {
+    const startMatch = /^<!-- managed-by: (.+) -->$/.exec(line);
+    const endMatch = /^<!-- end-managed-by: (.+) -->$/.exec(line);
+    if (startMatch || endMatch) {
+      const name = (startMatch ?? endMatch)[1];
+      const entry = managed.get(name) ?? { starts: 0, ends: 0 };
+      if (startMatch) entry.starts += 1;
+      else entry.ends += 1;
+      managed.set(name, entry);
+    }
+  }
+  const malformedMarkerLine = lines.some((line, index) => {
+    const ownStartPrefix = line.startsWith(start);
+    const ownEndPrefix = line.startsWith(end);
+    const genericPrefix = line.startsWith('<!-- managed-by: ')
+      || line.startsWith('<!-- end-managed-by: ');
+    const completeManagedLine = /^<!-- managed-by: .+ -->$/.test(line)
+      || /^<!-- end-managed-by: .+ -->$/.test(line);
+    return (ownStartPrefix && (line !== start || index === lines.length - 1))
+      || (ownEndPrefix && line !== end)
+      || (genericPrefix && !completeManagedLine);
   });
-  const hasOwnEndToken = text.split('\n').some((line) => {
-    const trimmed = line.trimStart();
-    return line.includes(end) && trimmed.startsWith(end) && line.trim() !== end;
-  });
+  const hasUnmatchedDistinctMarker = [...managed.entries()]
+    .filter(([name]) => name !== marker)
+    .some(([, counts]) => (counts.starts > 0) !== (counts.ends > 0));
 
   if (starts.length > 1 || ends.length > 1) return { state: 'conflict', code: 'fragment-marker-collision' };
-  if (hasOwnStartToken || hasOwnEndToken || (starts.length === 1) !== (ends.length === 1)) {
+  if (malformedMarkerLine || hasUnmatchedDistinctMarker
+      || (starts.length === 1) !== (ends.length === 1)) {
     return { state: 'conflict', code: 'incomplete-fragment' };
   }
   if (starts.length === 0) return { state: 'missing', code: 'fragment-missing' };
@@ -442,7 +461,7 @@ export async function runDoctor(root) {
   }
 
   const descriptors = [];
-  const seenSources = new Set();
+  const seenSources = new Map();
   for (const [index, reference] of result.value.sources.entries()) {
     if (reference.provider !== 'local') {
       envelope.diagnostics.push(diagnostic(
@@ -456,14 +475,15 @@ export async function runDoctor(root) {
     if (sourceRoot === undefined) continue;
     const key = pathKey(sourceRoot);
     if (seenSources.has(key)) {
+      const firstIndex = seenSources.get(key);
       envelope.diagnostics.push(diagnostic(
         'duplicate-source',
-        'Source is declared more than once',
+        `Source duplicates declaration at /sources/${firstIndex}/locator/path; remove one duplicate declaration`,
         { document: 'tbboot.yaml', path: `/sources/${index}/locator/path`, source: sourceRoot },
       ));
       continue;
     }
-    seenSources.add(key);
+    seenSources.set(key, index);
     await collectSourceSteps(sourceRoot, descriptors, envelope);
   }
 
