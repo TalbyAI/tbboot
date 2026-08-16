@@ -3,12 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.12 <25" },
-  "bin": { "tbboot": "src/cli.ts" },
+  "engines": {
+    "node": ">=24.12 <25"
+  },
+  "bin": {
+    "tbboot": "src/cli.ts"
+  },
   "scripts": {
     "check": "node --check src/cli.ts && node --check src/contract.ts && node --check src/doctor.ts && node --check test/doctor.e2e.test.ts",
     "test": "node --test test/doctor.e2e.test.ts",
-    "doctor": "node src/cli.ts doctor"
+    "doctor": "node src/cli.ts doctor",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
   },
-  "dependencies": { "ajv": "^8.17.1", "yaml": "^2.8.1" }
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  }
 }

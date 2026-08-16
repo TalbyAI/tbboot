@@ -1,4 +1,5 @@
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import {
   basename,
   dirname,
@@ -9,8 +10,81 @@ import {
   sep,
 } from 'node:path';
 import { validateDocument } from './contract.ts';
+import type {
+  Diagnostic,
+  DocumentKind,
+  ManifestDocument,
+  RecipeDocument,
+  SourceReference,
+  Step,
+} from './contract.ts';
 
-function diagnostic(code, message, context = {}, severity = 'error') {
+type SupportedDocumentKind = Extract<DocumentKind, 'manifest' | 'source' | 'recipe'>;
+type DiagnosticContext = Pick<Diagnostic, 'document' | 'path' | 'source' | 'recipe' | 'step'>;
+export type ArtifactType = Exclude<Step['type'], 'custom'>;
+export type ArtifactState = 'satisfied' | 'missing' | 'drift' | 'conflict';
+
+export type ArtifactAction = {
+  source: string;
+  recipe: string;
+  step: number;
+  type: ArtifactType;
+  target: string;
+  state: ArtifactState;
+};
+
+export type DoctorEnvelope = {
+  schemaVersion: 1;
+  command: 'doctor';
+  status: 'ok' | 'warning' | 'error';
+  changed: false;
+  actions: ArtifactAction[];
+  diagnostics: Diagnostic[];
+  consumerRoot?: string;
+};
+
+export type DoctorResult = {
+  envelope: DoctorEnvelope;
+  exitCode: 0 | 1;
+};
+
+type PathResolution =
+  | { path: string; escape: false }
+  | { escape: true }
+  | { error: unknown };
+
+type StepDescriptor = {
+  source: string;
+  recipe: string;
+  step: number;
+  type: ArtifactType;
+  input: string;
+  target: string;
+  optional: boolean;
+  recipeRoot: string;
+  inputPath?: PathResolution;
+  targetPath?: PathResolution;
+  marker?: string;
+  collision?: boolean;
+  action: ArtifactAction;
+};
+
+type FragmentResult =
+  | { state: 'satisfied'; code?: undefined }
+  | { state: 'missing' | 'drift' | 'conflict'; code: string };
+
+const documentPaths = {
+  manifest: 'tbboot.yaml',
+  source: 'source.yaml',
+  recipe: 'recipe.yaml',
+} satisfies Record<SupportedDocumentKind, string>;
+
+function diagnostic(
+  code: string,
+  message: string,
+  context: DiagnosticContext = {},
+  severity: Diagnostic['severity'] = 'error',
+): Diagnostic {
   return {
     code,
     severity,
@@ -23,24 +97,33 @@ function diagnostic(code, message, context = {}, severity = 'error') {
   };
 }
 
-function finish(envelope) {
+function finish(envelope: DoctorEnvelope): DoctorResult {
   const hasError = envelope.diagnostics.some(({ severity }) => severity === 'error');
   const hasWarning = envelope.diagnostics.some(({ severity }) => severity === 'warning');
   envelope.status = hasError ? 'error' : hasWarning ? 'warning' : 'ok';
   return { envelope, exitCode: hasError ? 1 : 0 };
 }
 
-function isNotFound(error) {
-  return error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
+function errorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && typeof error.code === 'string' ? error.code : undefined;
 }
 
-function isInside(root, candidate) {
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isNotFound(error: unknown): boolean {
+  return errorCode(error) === 'ENOENT' || errorCode(error) === 'ENOTDIR';
+}
+
+function isInside(root: string, candidate: string): boolean {
   const child = relative(root, candidate);
   return child === '' || (child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child));
 }
 
-async function realPathWithMissing(candidate) {
-  const missing = [];
+async function realPathWithMissing(candidate: string): Promise<string> {
+  const missing: string[] = [];
   let current = candidate;
   while (true) {
     try {
@@ -56,20 +139,21 @@ async function realPathWithMissing(candidate) {
   }
 }
 
-async function resolveContained(root, base, value) {
+async function resolveContained(root: string, base: string, value: string): Promise<PathResolution> {
   const logical = resolve(base, value);
   if (!isInside(root, logical)) return { escape: true };
   try {
     const canonical = await realPathWithMissing(logical);
-    return { path: canonical, escape: !isInside(root, canonical) };
+    if (!isInside(root, canonical)) return { escape: true };
+    return { path: canonical, escape: false };
   } catch (error) {
     return { error };
   }
 }
 
-function contextFor(descriptor, path) {
+function contextFor(descriptor: StepDescriptor, path: string): DiagnosticContext {
   return {
-    document: 'recipe.yaml',
+    document: documentPaths.recipe,
     path,
     source: descriptor.source,
     recipe: descriptor.recipe,
@@ -77,15 +161,22 @@ function contextFor(descriptor, path) {
   };
 }
 
-function stepPath(step, field) {
+function stepPath(step: number, field: 'input' | 'target'): string {
   return `/steps/${step - 1}/${field}`;
 }
 
-function stepSeverity(descriptor) {
+function stepSeverity(descriptor: StepDescriptor): Diagnostic['severity'] {
   return descriptor.optional ? 'warning' : 'error';
 }
 
-function addStepDiagnostic(envelope, descriptor, code, message, field, fatal = false) {
+function addStepDiagnostic(
+  envelope: DoctorEnvelope,
+  descriptor: StepDescriptor,
+  code: string,
+  message: string,
+  field: 'input' | 'target',
+  fatal = false,
+): void {
   envelope.diagnostics.push(diagnostic(
     code,
     message,
@@ -94,7 +185,9 @@ function addStepDiagnostic(envelope, descriptor, code, message, field, fatal = f
   ));
 }
 
-function artifactAction(descriptor) {
+function artifactAction(
+  descriptor: Pick<StepDescriptor, 'source' | 'recipe' | 'step' | 'type' | 'target'>,
+): ArtifactAction {
   return {
     source: descriptor.source,
     recipe: descriptor.recipe,
@@ -107,12 +200,29 @@ function artifactAction(descriptor) {
 
 const caseInsensitiveFs = process.platform === 'win32';
 
-function pathKey(value) {
+function pathKey(value: string): string {
   const normalized = value.replaceAll('/', sep);
   return caseInsensitiveFs ? normalized.toLowerCase() : normalized;
 }
 
-async function resolveLocalSource(root, locator, index, envelope) {
+function isPathEscape(resolution: PathResolution | undefined): boolean {
+  return resolution !== undefined && 'escape' in resolution && resolution.escape;
+}
+
+function hasPathError(resolution: PathResolution | undefined): boolean {
+  return resolution !== undefined && 'error' in resolution;
+}
+
+function resolvedPath(resolution: PathResolution | undefined): string | undefined {
+  return resolution !== undefined && 'path' in resolution ? resolution.path : undefined;
+}
+
+async function resolveLocalSource(
+  root: string,
+  locator: string,
+  index: number,
+  envelope: DoctorEnvelope,
+): Promise<string | undefined> {
   const candidate = resolve(root, locator);
   try {
     const sourceRoot = await realpath(candidate);
@@ -121,43 +231,47 @@ async function resolveLocalSource(root, locator, index, envelope) {
   } catch (error) {
     envelope.diagnostics.push(diagnostic(
       'source-read',
-      `Unable to read local Source: ${error.message}`,
-      { document: 'tbboot.yaml', path: `/sources/${index}/locator/path` },
+      `Unable to read local Source: ${errorMessage(error)}`,
+      { document: documentPaths.manifest, path: `/sources/${index}/locator/path` },
     ));
     return undefined;
   }
 }
 
-async function collectSourceSteps(sourceRoot, descriptors, envelope) {
-  let sourceText;
+async function collectSourceSteps(
+  sourceRoot: string,
+  descriptors: StepDescriptor[],
+  envelope: DoctorEnvelope,
+): Promise<void> {
+  let sourceText: string;
   try {
-    sourceText = await readFile(join(sourceRoot, 'source.yaml'), 'utf8');
+    sourceText = await readFile(join(sourceRoot, documentPaths.source), 'utf8');
   } catch (error) {
     envelope.diagnostics.push(diagnostic(
       'source-read',
-      `Unable to read source.yaml: ${error.message}`,
-      { document: 'source.yaml', source: sourceRoot },
+      `Unable to read source.yaml: ${errorMessage(error)}`,
+      { document: documentPaths.source, source: sourceRoot },
     ));
     return;
   }
 
-  const sourceResult = validateDocument({
+  const sourceResult = validateDocument<'source'>({
     kind: 'source',
     text: sourceText,
-    document: 'source.yaml',
+    document: documentPaths.source,
     source: sourceRoot,
   });
   envelope.diagnostics.push(...sourceResult.diagnostics);
   if (sourceResult.value === undefined) return;
 
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(sourceRoot, { withFileTypes: true });
   } catch (error) {
     envelope.diagnostics.push(diagnostic(
       'source-read',
-      `Unable to discover Recipes: ${error.message}`,
-      { document: 'source.yaml', source: sourceRoot },
+      `Unable to discover Recipes: ${errorMessage(error)}`,
+      { document: documentPaths.source, source: sourceRoot },
     ));
     return;
   }
@@ -168,38 +282,39 @@ async function collectSourceSteps(sourceRoot, descriptors, envelope) {
 
   for (const entry of recipes) {
     const recipe = entry.name;
-    const recipeFile = join(sourceRoot, recipe, 'recipe.yaml');
-    let recipeText;
+    const recipeFile = join(sourceRoot, recipe, documentPaths.recipe);
+    let recipeText: string;
     try {
       recipeText = await readFile(recipeFile, 'utf8');
     } catch (error) {
       if (isNotFound(error)) continue;
       envelope.diagnostics.push(diagnostic(
         'recipe-read',
-        `Unable to read recipe.yaml: ${error.message}`,
-        { document: 'recipe.yaml', source: sourceRoot, recipe },
+        `Unable to read recipe.yaml: ${errorMessage(error)}`,
+        { document: documentPaths.recipe, source: sourceRoot, recipe },
       ));
       continue;
     }
 
-    const recipeResult = validateDocument({
+    const recipeResult = validateDocument<'recipe'>({
       kind: 'recipe',
       text: recipeText,
-      document: 'recipe.yaml',
+      document: documentPaths.recipe,
       source: sourceRoot,
       recipe,
     });
     envelope.diagnostics.push(...recipeResult.diagnostics);
     if (recipeResult.value === undefined) continue;
 
-    for (const [index, step] of recipeResult.value.steps.entries()) {
+    const recipeDocument: RecipeDocument = recipeResult.value;
+    for (const [index, step] of recipeDocument.steps.entries()) {
       const stepNumber = index + 1;
       if (step.type === 'custom') {
         envelope.diagnostics.push(diagnostic(
           'unsupported-step',
           'Custom steps are not supported by doctor',
           {
-            document: 'recipe.yaml',
+            document: documentPaths.recipe,
             path: `/steps/${index}`,
             source: sourceRoot,
             recipe,
@@ -210,7 +325,7 @@ async function collectSourceSteps(sourceRoot, descriptors, envelope) {
         continue;
       }
 
-      const descriptor = {
+      const descriptor: StepDescriptor = {
         source: sourceRoot,
         recipe,
         step: stepNumber,
@@ -219,21 +334,28 @@ async function collectSourceSteps(sourceRoot, descriptors, envelope) {
         target: step.target,
         optional: step.optional === true,
         recipeRoot: join(sourceRoot, recipe),
+        action: artifactAction({
+          source: sourceRoot,
+          recipe,
+          step: stepNumber,
+          type: step.type,
+          target: step.target,
+        }),
       };
       descriptor.inputPath = await resolveContained(sourceRoot, descriptor.recipeRoot, descriptor.input);
-      descriptor.targetPath = await resolveContained(envelope.consumerRoot, envelope.consumerRoot, descriptor.target);
-      descriptor.action = artifactAction(descriptor);
+      descriptor.targetPath = await resolveContained(envelope.consumerRoot!, envelope.consumerRoot!, descriptor.target);
       descriptors.push(descriptor);
     }
   }
 }
 
-function registerCollisions(descriptors, envelope) {
-  const targetWriters = new Map();
-  const markerWriters = new Map();
+function registerCollisions(descriptors: StepDescriptor[], envelope: DoctorEnvelope): void {
+  const targetWriters = new Map<string, StepDescriptor[]>();
+  const markerWriters = new Map<string, StepDescriptor[]>();
   for (const descriptor of descriptors) {
-    if (descriptor.targetPath?.path && !descriptor.targetPath.escape && !descriptor.targetPath.error) {
-      const key = pathKey(descriptor.targetPath.path);
+    const targetPath = resolvedPath(descriptor.targetPath);
+    if (targetPath !== undefined && !isPathEscape(descriptor.targetPath) && !hasPathError(descriptor.targetPath)) {
+      const key = pathKey(targetPath);
       const group = targetWriters.get(key) ?? [];
       group.push(descriptor);
       targetWriters.set(key, group);
@@ -279,12 +401,12 @@ function registerCollisions(descriptors, envelope) {
   }
 }
 
-function normalizeNewlines(value) {
+function normalizeNewlines(value: string): string {
   return value.replace(/\r\n?/g, '\n');
 }
 
-function exactMarkerLines(text, token, startMarker) {
-  const positions = [];
+function exactMarkerLines(text: string, token: string, startMarker: boolean): number[] {
+  const positions: number[] = [];
   let offset = 0;
   while (offset <= text.length) {
     const lineEnd = text.indexOf('\n', offset);
@@ -296,7 +418,7 @@ function exactMarkerLines(text, token, startMarker) {
   return positions;
 }
 
-function fragmentState(targetText, inputText, marker) {
+function fragmentState(targetText: string, inputText: string, marker: string): FragmentResult {
   const text = normalizeNewlines(targetText);
   const lines = text.split('\n');
   const body = normalizeNewlines(inputText);
@@ -306,12 +428,13 @@ function fragmentState(targetText, inputText, marker) {
   const starts = exactMarkerLines(text, start, true);
   const ends = exactMarkerLines(text, end, false);
 
-  const managed = new Map();
+  const managed = new Map<string, { starts: number; ends: number }>();
   for (const line of lines) {
     const startMatch = /^<!-- managed-by: (.+) -->$/.exec(line);
     const endMatch = /^<!-- end-managed-by: (.+) -->$/.exec(line);
-    if (startMatch || endMatch) {
-      const name = (startMatch ?? endMatch)[1];
+    const markerMatch = startMatch ?? endMatch;
+    if (markerMatch) {
+      const name = markerMatch[1];
       const entry = managed.get(name) ?? { starts: 0, ends: 0 };
       if (startMatch) entry.starts += 1;
       else entry.ends += 1;
@@ -349,39 +472,41 @@ function fragmentState(targetText, inputText, marker) {
     : { state: 'drift', code: 'fragment-drift' };
 }
 
-async function evaluateDescriptor(descriptor, envelope) {
+async function evaluateDescriptor(descriptor: StepDescriptor, envelope: DoctorEnvelope): Promise<void> {
   if (descriptor.collision) return;
 
-  if (descriptor.inputPath?.escape) {
+  if (isPathEscape(descriptor.inputPath)) {
     addStepDiagnostic(envelope, descriptor, 'source-input-escape', 'Source input escapes the canonical Source root', 'input', true);
     return;
   }
-  if (descriptor.inputPath?.error || !descriptor.inputPath?.path) {
+  const inputPath = resolvedPath(descriptor.inputPath);
+  if (hasPathError(descriptor.inputPath) || inputPath === undefined) {
     addStepDiagnostic(envelope, descriptor, 'source-input-missing', 'Source input is not readable', 'input');
     return;
   }
 
-  let input;
+  let input: Buffer;
   try {
-    input = await readFile(descriptor.inputPath.path);
+    input = await readFile(inputPath);
   } catch {
     addStepDiagnostic(envelope, descriptor, 'source-input-missing', 'Source input is not readable', 'input');
     return;
   }
 
-  if (descriptor.targetPath?.escape) {
+  if (isPathEscape(descriptor.targetPath)) {
     addStepDiagnostic(envelope, descriptor, 'target-escape', 'Target escapes the canonical Consumer repository root', 'target', true);
     return;
   }
-  if (descriptor.targetPath?.error || !descriptor.targetPath?.path) {
+  const targetPath = resolvedPath(descriptor.targetPath);
+  if (hasPathError(descriptor.targetPath) || targetPath === undefined) {
     descriptor.action.state = 'conflict';
     addStepDiagnostic(envelope, descriptor, 'target-read', 'Target is not readable', 'target');
     return;
   }
 
-  let target;
+  let target: Buffer;
   try {
-    target = await readFile(descriptor.targetPath.path);
+    target = await readFile(targetPath);
   } catch (error) {
     if (isNotFound(error)) {
       descriptor.action.state = 'missing';
@@ -395,7 +520,7 @@ async function evaluateDescriptor(descriptor, envelope) {
       return;
     }
     descriptor.action.state = 'conflict';
-    addStepDiagnostic(envelope, descriptor, 'target-read', `Unable to read target: ${error.message}`, 'target');
+    addStepDiagnostic(envelope, descriptor, 'target-read', `Unable to read target: ${errorMessage(error)}`, 'target');
     return;
   }
 
@@ -407,7 +532,7 @@ async function evaluateDescriptor(descriptor, envelope) {
     return;
   }
 
-  const result = fragmentState(target.toString('utf8'), input.toString('utf8'), descriptor.marker);
+  const result = fragmentState(target.toString('utf8'), input.toString('utf8'), descriptor.marker!);
   descriptor.action.state = result.state;
   if (result.code !== undefined) {
     addStepDiagnostic(
@@ -427,8 +552,8 @@ async function evaluateDescriptor(descriptor, envelope) {
   }
 }
 
-export async function runDoctor(root) {
-  const envelope = {
+export async function runDoctor(root: string): Promise<DoctorResult> {
+  const envelope: DoctorEnvelope = {
     schemaVersion: 1,
     command: 'doctor',
     status: 'ok',
@@ -438,24 +563,24 @@ export async function runDoctor(root) {
     consumerRoot: undefined,
   };
 
-  let manifestText;
+  let manifestText: string;
   try {
-    manifestText = await readFile(join(root, 'tbboot.yaml'), 'utf8');
+    manifestText = await readFile(join(root, documentPaths.manifest), 'utf8');
     envelope.consumerRoot = await realpath(root);
   } catch (error) {
     envelope.diagnostics.push(diagnostic(
       'manifest-read',
-      `Unable to read tbboot.yaml: ${error.message}`,
-      { document: 'tbboot.yaml' },
+      `Unable to read tbboot.yaml: ${errorMessage(error)}`,
+      { document: documentPaths.manifest },
     ));
     delete envelope.consumerRoot;
     return finish(envelope);
   }
 
-  const result = validateDocument({
+  const result = validateDocument<'manifest'>({
     kind: 'manifest',
     text: manifestText,
-    document: 'tbboot.yaml',
+    document: documentPaths.manifest,
   });
   envelope.diagnostics.push(...result.diagnostics);
   if (result.value === undefined) {
@@ -463,26 +588,28 @@ export async function runDoctor(root) {
     return finish(envelope);
   }
 
-  const descriptors = [];
-  const seenSources = new Map();
-  for (const [index, reference] of result.value.sources.entries()) {
-    if (reference.provider !== 'local') {
+  const manifest: ManifestDocument = result.value;
+  const descriptors: StepDescriptor[] = [];
+  const seenSources = new Map<string, number>();
+  for (const [index, reference] of manifest.sources.entries()) {
+    const sourceReference: SourceReference = reference;
+    if (sourceReference.provider !== 'local') {
       envelope.diagnostics.push(diagnostic(
         'unsupported-source-provider',
-        `Source provider is not supported: ${reference.provider}`,
-        { document: 'tbboot.yaml', path: `/sources/${index}/provider` },
+        `Source provider is not supported: ${sourceReference.provider}`,
+        { document: documentPaths.manifest, path: `/sources/${index}/provider` },
       ));
       continue;
     }
-    const sourceRoot = await resolveLocalSource(root, reference.locator.path, index, envelope);
+    const sourceRoot = await resolveLocalSource(root, sourceReference.locator.path, index, envelope);
     if (sourceRoot === undefined) continue;
     const key = pathKey(sourceRoot);
     if (seenSources.has(key)) {
-      const firstIndex = seenSources.get(key);
+      const firstIndex = seenSources.get(key)!;
       envelope.diagnostics.push(diagnostic(
         'duplicate-source',
         `Source duplicates declaration at /sources/${firstIndex}/locator/path; remove one duplicate declaration`,
-        { document: 'tbboot.yaml', path: `/sources/${index}/locator/path`, source: sourceRoot },
+        { document: documentPaths.manifest, path: `/sources/${index}/locator/path`, source: sourceRoot },
       ));
       continue;
     }

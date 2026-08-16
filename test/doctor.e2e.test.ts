@@ -5,26 +5,54 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { parseJsonOutput, runCommand } from '../prototypes/issue-12/harness.mjs';
+import type { DoctorEnvelope } from '../src/doctor.ts';
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliPath = join(projectRoot, 'src', 'cli.ts');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-let installedRoot;
-let installedBinPromise;
+let installedRoot: string | undefined;
+let installedBinPromise: Promise<string> | undefined;
 
-function commandFor(file, args) {
+type Fixture = {
+  root: string;
+  consumerRoot: string;
+  sourceRoot: string;
+  profileRoot: string;
+  cleanup: () => Promise<void>;
+};
+
+type RecipeStepFixture = {
+  type?: 'file' | 'file-fragment' | 'custom';
+  input?: string;
+  inputContent?: string;
+  inputMissing?: boolean;
+  target?: string;
+  optional?: boolean;
+};
+
+type SnapshotEntry =
+  | { root: string; path: string; kind: 'directory' }
+  | { root: string; path: string; kind: 'file'; bytes: Uint8Array };
+
+type CommandOptions = Parameters<typeof runCommand>[0];
+type CommandResult = Awaited<ReturnType<typeof runCommand>>;
+type RunCliOptions = Omit<CommandOptions, 'file' | 'args'>;
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && typeof error.code === 'string' ? error.code : undefined;
+}
+
+function commandFor(file: string, args: string[]): Pick<CommandOptions, 'file' | 'args'> {
   if (process.platform !== 'win32') return { file, args };
-  const quote = (value) => {
-    const text = String(value);
-    return /\s/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-  };
+  const quote = (value: string) => /\s/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
   return {
     file: process.env.ComSpec ?? 'cmd.exe',
     args: ['/d', '/s', '/c', [file, ...args].map(quote).join(' ')],
   };
 }
 
-function installedBin() {
+function installedBin(): Promise<string> {
   if (!installedBinPromise) {
     installedBinPromise = (async () => {
       installedRoot = await mkdtemp(join(tmpdir(), 'tbboot-installed-'));
@@ -43,7 +71,7 @@ function installedBin() {
   return installedBinPromise;
 }
 
-async function runCli(fixture, args, options = {}) {
+async function runCli(fixture: Fixture, args: string[], options: RunCliOptions = {}): Promise<CommandResult> {
   const bin = await installedBin();
   return runReadOnlyCommand(fixture, {
     ...commandFor(bin, args),
@@ -56,7 +84,7 @@ test.after(async () => {
   if (installedRoot) await rm(installedRoot, { recursive: true, force: true });
 });
 
-async function createFixture() {
+async function createFixture(): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-13-'));
   const consumerRoot = join(root, 'consumer');
   const sourceRoot = join(root, 'source');
@@ -93,7 +121,7 @@ async function createFixture() {
   };
 }
 
-async function writeRecipe(sourceRoot, recipe, steps) {
+async function writeRecipe(sourceRoot: string, recipe: string, steps: RecipeStepFixture[]): Promise<void> {
   const recipeRoot = join(sourceRoot, recipe);
   await mkdir(recipeRoot, { recursive: true });
   await writeFile(join(recipeRoot, 'recipe.yaml'), [
@@ -108,7 +136,7 @@ async function writeRecipe(sourceRoot, recipe, steps) {
     ]),
     '',
   ].join('\n'));
-  for (const [index, step] of steps.entries()) {
+  for (const step of steps) {
     if (step.input !== undefined && step.inputContent !== undefined) {
       const inputPath = join(recipeRoot, step.input);
       await mkdir(dirname(inputPath), { recursive: true });
@@ -117,21 +145,23 @@ async function writeRecipe(sourceRoot, recipe, steps) {
     if (step.input !== undefined && step.inputMissing === true) {
       await rm(join(recipeRoot, step.input), { force: true });
     }
-    void index;
   }
 }
 
-async function runDoctor(fixture, ...args) {
+async function runDoctor(
+  fixture: Fixture,
+  ...args: string[]
+): Promise<{ result: CommandResult; envelope: DoctorEnvelope }> {
   const result = await runCli(fixture, [
     'doctor', '--json', '--root', fixture.consumerRoot, ...args,
   ]);
   assert.equal(result.stderr, '');
-  return { result, envelope: parseJsonOutput(result.stdout) };
+  return { result, envelope: parseJsonOutput<DoctorEnvelope>(result.stdout) };
 }
 
-async function snapshotTree(...roots) {
-  const snapshot = [];
-  async function visit(root, current) {
+async function snapshotTree(...roots: string[]): Promise<SnapshotEntry[]> {
+  const snapshot: SnapshotEntry[] = [];
+  async function visit(root: string, current: string): Promise<void> {
     const entries = (await readdir(current, { withFileTypes: true }))
       .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
     for (const entry of entries) {
@@ -153,7 +183,7 @@ async function snapshotTree(...roots) {
   });
 }
 
-async function runReadOnlyCommand(fixture, command) {
+async function runReadOnlyCommand(fixture: Fixture, command: CommandOptions): Promise<CommandResult> {
   const roots = [fixture.consumerRoot, fixture.sourceRoot, fixture.profileRoot];
   const before = await snapshotTree(...roots);
   try {
@@ -190,10 +220,12 @@ test('invalid YAML returns one JSON diagnostic and no stderr', async () => {
     const result = await runCli(fixture, ['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(result.exitCode, 1);
     assert.equal(result.stderr, '');
-    const envelope = parseJsonOutput(result.stdout);
+    const envelope = parseJsonOutput<DoctorEnvelope>(result.stdout);
     assert.equal(envelope.status, 'error');
     assert.deepEqual(envelope.diagnostics.map(({ code }) => code), ['yaml-parse-error']);
-    assert.equal(envelope.diagnostics[0].document, 'tbboot.yaml');
+    const firstDiagnostic = envelope.diagnostics[0];
+    assert.ok(firstDiagnostic);
+    assert.equal(firstDiagnostic.document, 'tbboot.yaml');
   } finally {
     await fixture.cleanup();
   }
@@ -205,7 +237,7 @@ test('valid canonical fixture compiles and validates without contract errors', a
     const result = await runCli(fixture, ['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, '');
-    const envelope = parseJsonOutput(result.stdout);
+    const envelope = parseJsonOutput<DoctorEnvelope>(result.stdout);
     assert.equal(envelope.status, 'ok');
     assert.equal(envelope.changed, false);
     assert.equal(envelope.diagnostics.some(({ code }) => code === 'schema-validation-failed'), false);
@@ -222,7 +254,8 @@ test('linked CLI entrypoint resolves its real path before invoking main', async 
     try {
       await symlink(cliPath, link);
     } catch (error) {
-      if (error.code === 'EPERM' || error.code === 'EACCES') {
+      const code = errorCode(error);
+      if (code === 'EPERM' || code === 'EACCES') {
         t.skip('symlinks are not available in this environment');
         return;
       }
@@ -235,7 +268,8 @@ test('linked CLI entrypoint resolves its real path before invoking main', async 
     });
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, '');
-    assert.equal(parseJsonOutput(result.stdout).status, 'ok');
+    const envelope = parseJsonOutput<DoctorEnvelope>(result.stdout);
+    assert.equal(envelope.status, 'ok');
   } finally {
     await rm(linkRoot, { recursive: true, force: true });
     await fixture.cleanup();
@@ -287,8 +321,12 @@ test('rejects unsupported providers and duplicate normalized local Sources', asy
     assert.deepEqual(envelope.diagnostics.map(({ code }) => code), [
       'unsupported-source-provider', 'duplicate-source',
     ]);
-    assert.equal(envelope.diagnostics[0].path, '/sources/0/provider');
-    assert.equal(envelope.diagnostics[1].path, '/sources/2/locator/path');
+    const firstDiagnostic = envelope.diagnostics[0];
+    assert.ok(firstDiagnostic);
+    assert.equal(firstDiagnostic.path, '/sources/0/provider');
+    const secondDiagnostic = envelope.diagnostics[1];
+    assert.ok(secondDiagnostic);
+    assert.equal(secondDiagnostic.path, '/sources/2/locator/path');
   } finally {
     await fixture.cleanup();
   }
@@ -303,7 +341,7 @@ test('preserves case-distinct Source and target paths', async (t) => {
     try {
       await mkdir(join(probeRoot, 'a'));
     } catch (error) {
-      if (error.code === 'EEXIST') {
+      if (errorCode(error) === 'EEXIST') {
         t.skip('filesystem is case-insensitive');
         return;
       }
@@ -358,7 +396,9 @@ test('missing input is a conflict and optional missing input is a warning', asyn
     const { result, envelope } = await runDoctor(fixture);
     assert.equal(result.exitCode, 1);
     assert.deepEqual(envelope.actions.map(({ state }) => state), ['conflict']);
-    assert.equal(envelope.diagnostics[0].code, 'source-input-missing');
+    const firstDiagnostic = envelope.diagnostics[0];
+    assert.ok(firstDiagnostic);
+    assert.equal(firstDiagnostic.code, 'source-input-missing');
 
     await writeFile(join(fixture.sourceRoot, 'baseline', 'recipe.yaml'), [
       'schemaVersion: 1',
@@ -372,7 +412,9 @@ test('missing input is a conflict and optional missing input is a warning', asyn
     const optional = await runDoctor(fixture);
     assert.equal(optional.result.exitCode, 0);
     assert.equal(optional.envelope.status, 'warning');
-    assert.equal(optional.envelope.diagnostics[0].severity, 'warning');
+    const optionalDiagnostic = optional.envelope.diagnostics[0];
+    assert.ok(optionalDiagnostic);
+    assert.equal(optionalDiagnostic.severity, 'warning');
   } finally {
     await fixture.cleanup();
   }
@@ -388,8 +430,10 @@ test('unsupported Custom Steps produce no action and follow optionality', async 
     assert.equal(result.exitCode, 0);
     assert.equal(envelope.status, 'warning');
     assert.equal(envelope.actions.length, 1);
-    assert.equal(envelope.diagnostics.at(-1).code, 'unsupported-step');
-    assert.equal(envelope.diagnostics.at(-1).severity, 'warning');
+    const lastDiagnostic = envelope.diagnostics.at(-1);
+    assert.ok(lastDiagnostic);
+    assert.equal(lastDiagnostic.code, 'unsupported-step');
+    assert.equal(lastDiagnostic.severity, 'warning');
   } finally {
     await fixture.cleanup();
   }
@@ -412,7 +456,8 @@ test('rejects input and target symlink escapes', async (t) => {
         join(fixture.consumerRoot, 'generated', 'outside-link.txt'),
       );
     } catch (error) {
-      if (error.code === 'EPERM' || error.code === 'EACCES') {
+      const code = errorCode(error);
+      if (code === 'EPERM' || code === 'EACCES') {
         t.skip('symlinks are not available in this environment');
         return;
       }
@@ -545,7 +590,9 @@ test('File Fragment normalizes line endings and detects missing, drift, and sati
     ].join('\r\n'));
     const satisfied = await runDoctor(fixture);
     assert.equal(satisfied.result.exitCode, 0);
-    assert.equal(satisfied.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'satisfied');
+    const satisfiedAction = satisfied.envelope.actions.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(satisfiedAction);
+    assert.equal(satisfiedAction.state, 'satisfied');
 
     await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
       'before',
@@ -556,8 +603,12 @@ test('File Fragment normalizes line endings and detects missing, drift, and sati
     ].join('\n'));
     const drift = await runDoctor(fixture);
     assert.equal(drift.result.exitCode, 1);
-    assert.equal(drift.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'drift');
-    assert.equal(drift.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'fragment-drift');
+    const driftAction = drift.envelope.actions.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(driftAction);
+    assert.equal(driftAction.state, 'drift');
+    const driftDiagnostic = drift.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(driftDiagnostic);
+    assert.equal(driftDiagnostic.code, 'fragment-drift');
   } finally {
     await fixture.cleanup();
   }
@@ -579,7 +630,9 @@ test('File Fragment structural failures conflict and distinct markers may share 
     ].join('\n'));
     const duplicate = await runDoctor(fixture);
     assert.equal(duplicate.result.exitCode, 1);
-    assert.equal(duplicate.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
+    const duplicateAction = duplicate.envelope.actions.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(duplicateAction);
+    assert.equal(duplicateAction.state, 'conflict');
     assert.deepEqual(duplicate.envelope.diagnostics.filter(({ recipe }) => recipe === 'fragment')
       .map(({ code }) => code), ['fragment-marker-collision']);
 
@@ -588,14 +641,22 @@ test('File Fragment structural failures conflict and distinct markers may share 
       'body',
     ].join('\n'));
     const incomplete = await runDoctor(fixture);
-    assert.equal(incomplete.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
-    assert.equal(incomplete.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'incomplete-fragment');
+    const incompleteAction = incomplete.envelope.actions.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(incompleteAction);
+    assert.equal(incompleteAction.state, 'conflict');
+    const incompleteDiagnostic = incomplete.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(incompleteDiagnostic);
+    assert.equal(incompleteDiagnostic.code, 'incomplete-fragment');
 
     await writeFile(join(fixture.consumerRoot, 'AGENTS.md'),
       'ordinary <!-- managed-by: source/fragment --> text\n');
     const inline = await runDoctor(fixture);
-    assert.equal(inline.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'missing');
-    assert.equal(inline.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'fragment-missing');
+    const inlineAction = inline.envelope.actions.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(inlineAction);
+    assert.equal(inlineAction.state, 'missing');
+    const inlineDiagnostic = inline.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(inlineDiagnostic);
+    assert.equal(inlineDiagnostic.code, 'fragment-missing');
 
     await writeFile(join(fixture.consumerRoot, 'AGENTS.md'), [
       '<!-- managed-by: source/fragment -->',
@@ -603,8 +664,12 @@ test('File Fragment structural failures conflict and distinct markers may share 
       '<!-- end-managed-by: source/other -->',
     ].join('\n'));
     const mismatched = await runDoctor(fixture);
-    assert.equal(mismatched.envelope.actions.find(({ recipe }) => recipe === 'fragment').state, 'conflict');
-    assert.equal(mismatched.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment').code, 'incomplete-fragment');
+    const mismatchedAction = mismatched.envelope.actions.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(mismatchedAction);
+    assert.equal(mismatchedAction.state, 'conflict');
+    const mismatchedDiagnostic = mismatched.envelope.diagnostics.find(({ recipe }) => recipe === 'fragment');
+    assert.ok(mismatchedDiagnostic);
+    assert.equal(mismatchedDiagnostic.code, 'incomplete-fragment');
 
     await writeRecipe(fixture.sourceRoot, 'other-fragment', [
       { type: 'file-fragment', input: 'files/other.txt', inputContent: 'other\n', target: 'AGENTS.md' },
@@ -626,7 +691,8 @@ test('optional Fragment failures warn, human output is actionable, and doctor is
     const json = await runCli(fixture, ['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(json.exitCode, 0);
     assert.equal(json.stderr, '');
-    assert.equal(parseJsonOutput(json.stdout).status, 'warning');
+    const jsonEnvelope = parseJsonOutput<DoctorEnvelope>(json.stdout);
+    assert.equal(jsonEnvelope.status, 'warning');
 
     const human = await runCli(fixture, ['doctor', '--root', fixture.consumerRoot]);
     assert.equal(human.exitCode, 0);
@@ -649,7 +715,7 @@ test('contract gates fail before discovery and omitted root uses cwd', async () 
     '',
   ].join('\n');
   try {
-    const cases = [
+    const cases: Array<[string, string]> = [
       ['sources: []\n', 'schema-version-missing'],
       ['schemaVersion: 2\nsources: []\n', 'schema-version-unsupported'],
       ['schemaVersion: 1\nschemaVersion: 1\nsources: []\n', 'yaml-parse-error'],
@@ -661,14 +727,18 @@ test('contract gates fail before discovery and omitted root uses cwd', async () 
       await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), text);
       const { result, envelope } = await runDoctor(fixture);
       assert.equal(result.exitCode, 1, code);
-      assert.equal(envelope.diagnostics[0].code, code);
+      const firstDiagnostic = envelope.diagnostics[0];
+      assert.ok(firstDiagnostic);
+      assert.equal(firstDiagnostic.code, code);
       assert.equal(envelope.actions.length, 0);
     }
 
     await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), validManifest);
     await writeFile(join(fixture.sourceRoot, 'source.yaml'), 'schemaVersion: 2\n');
     const invalidSource = await runDoctor(fixture);
-    assert.equal(invalidSource.envelope.diagnostics[0].code, 'schema-version-unsupported');
+    const invalidSourceDiagnostic = invalidSource.envelope.diagnostics[0];
+    assert.ok(invalidSourceDiagnostic);
+    assert.equal(invalidSourceDiagnostic.code, 'schema-version-unsupported');
     assert.equal(invalidSource.envelope.actions.length, 0);
 
     await writeFile(join(fixture.sourceRoot, 'source.yaml'), 'schemaVersion: 1\n');
@@ -684,7 +754,9 @@ test('contract gates fail before discovery and omitted root uses cwd', async () 
       '',
     ].join('\n'));
     const invalidRecipe = await runDoctor(fixture);
-    assert.equal(invalidRecipe.envelope.diagnostics[0].code, 'requires-not-supported');
+    const invalidRecipeDiagnostic = invalidRecipe.envelope.diagnostics[0];
+    assert.ok(invalidRecipeDiagnostic);
+    assert.equal(invalidRecipeDiagnostic.code, 'requires-not-supported');
     assert.equal(invalidRecipe.envelope.actions.length, 0);
 
     await writeFile(join(fixture.sourceRoot, 'baseline', 'recipe.yaml'), [
@@ -698,7 +770,10 @@ test('contract gates fail before discovery and omitted root uses cwd', async () 
     const omittedRoot = await runCli(fixture, ['doctor', '--json'], { cwd: fixture.consumerRoot });
     assert.equal(omittedRoot.exitCode, 0);
     assert.equal(omittedRoot.stderr, '');
-    assert.equal(parseJsonOutput(omittedRoot.stdout).actions[0].state, 'satisfied');
+    const omittedRootEnvelope = parseJsonOutput<DoctorEnvelope>(omittedRoot.stdout);
+    const firstAction = omittedRootEnvelope.actions[0];
+    assert.ok(firstAction);
+    assert.equal(firstAction.state, 'satisfied');
   } finally {
     await fixture.cleanup();
   }
@@ -737,7 +812,8 @@ test('read-only process helper checks writes when the command rejects', async ()
         cwd: projectRoot,
         timeoutMs: 100,
       }),
-      (error) => {
+      (error: unknown) => {
+        assert(error instanceof Error);
         assert.equal(error.name, 'AssertionError');
         assert.match(error.message, /read-only process modified/);
         return true;
