@@ -8,6 +8,53 @@ import { parseJsonOutput, runCommand } from '../prototypes/issue-12/harness.mjs'
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliPath = join(projectRoot, 'src', 'cli.ts');
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+let installedRoot;
+let installedBinPromise;
+
+function commandFor(file, args) {
+  if (process.platform !== 'win32') return { file, args };
+  const quote = (value) => {
+    const text = String(value);
+    return /\s/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  return {
+    file: process.env.ComSpec ?? 'cmd.exe',
+    args: ['/d', '/s', '/c', [file, ...args].map(quote).join(' ')],
+  };
+}
+
+function installedBin() {
+  if (!installedBinPromise) {
+    installedBinPromise = (async () => {
+      installedRoot = await mkdtemp(join(tmpdir(), 'tbboot-installed-'));
+      const result = await runCommand({
+        ...commandFor(npmCommand, [
+          'install', '--prefix', installedRoot, '--no-save', '--ignore-scripts',
+          '--no-audit', '--no-fund', '--package-lock=false', projectRoot,
+        ]),
+        cwd: projectRoot,
+      });
+      assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+      return join(installedRoot, 'node_modules', '.bin',
+        process.platform === 'win32' ? 'tbboot.cmd' : 'tbboot');
+    })();
+  }
+  return installedBinPromise;
+}
+
+async function runCli(args, options = {}) {
+  const bin = await installedBin();
+  return runCommand({
+    ...commandFor(bin, args),
+    cwd: projectRoot,
+    ...options,
+  });
+}
+
+test.after(async () => {
+  if (installedRoot) await rm(installedRoot, { recursive: true, force: true });
+});
 
 async function createFixture() {
   const root = await mkdtemp(join(tmpdir(), 'tbboot-issue-13-'));
@@ -72,11 +119,9 @@ async function writeRecipe(sourceRoot, recipe, steps) {
 }
 
 async function runDoctor(fixture, ...args) {
-  const result = await runCommand({
-    file: process.execPath,
-    args: [cliPath, 'doctor', '--json', '--root', fixture.consumerRoot, ...args],
-    cwd: projectRoot,
-  });
+  const result = await runCli([
+    'doctor', '--json', '--root', fixture.consumerRoot, ...args,
+  ]);
   assert.equal(result.stderr, '');
   return { result, envelope: parseJsonOutput(result.stdout) };
 }
@@ -106,11 +151,7 @@ async function snapshotTree(...roots) {
 }
 
 test('unknown arguments return 2 and print usage only on stderr', async () => {
-  const result = await runCommand({
-    file: process.execPath,
-    args: [cliPath, 'doctor', '--unknown'],
-    cwd: projectRoot,
-  });
+  const result = await runCli(['doctor', '--unknown']);
   assert.equal(result.exitCode, 2);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /usage: tbboot doctor/);
@@ -120,11 +161,7 @@ test('invalid YAML returns one JSON diagnostic and no stderr', async () => {
   const fixture = await createFixture();
   try {
     await writeFile(join(fixture.consumerRoot, 'tbboot.yaml'), 'schemaVersion: [\n');
-    const result = await runCommand({
-      file: process.execPath,
-      args: [cliPath, 'doctor', '--json', '--root', fixture.consumerRoot],
-      cwd: projectRoot,
-    });
+    const result = await runCli(['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(result.exitCode, 1);
     assert.equal(result.stderr, '');
     const envelope = parseJsonOutput(result.stdout);
@@ -139,11 +176,7 @@ test('invalid YAML returns one JSON diagnostic and no stderr', async () => {
 test('valid canonical fixture compiles and validates without contract errors', async () => {
   const fixture = await createFixture();
   try {
-    const result = await runCommand({
-      file: process.execPath,
-      args: [cliPath, 'doctor', '--json', '--root', fixture.consumerRoot],
-      cwd: projectRoot,
-    });
+    const result = await runCli(['doctor', '--json', '--root', fixture.consumerRoot]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, '');
     const envelope = parseJsonOutput(result.stdout);
@@ -151,6 +184,34 @@ test('valid canonical fixture compiles and validates without contract errors', a
     assert.equal(envelope.changed, false);
     assert.equal(envelope.diagnostics.some(({ code }) => code === 'schema-validation-failed'), false);
   } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('linked CLI entrypoint resolves its real path before invoking main', async (t) => {
+  const fixture = await createFixture();
+  const linkRoot = await mkdtemp(join(tmpdir(), 'tbboot-link-'));
+  try {
+    const link = join(linkRoot, 'cli.ts');
+    try {
+      await symlink(cliPath, link);
+    } catch (error) {
+      if (error.code === 'EPERM' || error.code === 'EACCES') {
+        t.skip('symlinks are not available in this environment');
+        return;
+      }
+      throw error;
+    }
+    const result = await runCommand({
+      file: process.execPath,
+      args: [link, 'doctor', '--json', '--root', fixture.consumerRoot],
+      cwd: projectRoot,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, '');
+    assert.equal(parseJsonOutput(result.stdout).status, 'ok');
+  } finally {
+    await rm(linkRoot, { recursive: true, force: true });
     await fixture.cleanup();
   }
 });
@@ -482,20 +543,14 @@ test('optional Fragment failures warn, human output is actionable, and doctor is
       { type: 'file-fragment', input: 'files/missing.txt', target: 'AGENTS.md', optional: true },
     ]);
     const before = await snapshotTree(fixture.consumerRoot, fixture.sourceRoot, profileRoot);
-    const json = await runCommand({
-      file: process.execPath,
-      args: [cliPath, 'doctor', '--json', '--root', fixture.consumerRoot],
-      cwd: projectRoot,
+    const json = await runCli(['doctor', '--json', '--root', fixture.consumerRoot], {
       env: { USERPROFILE: profileRoot, HOME: profileRoot },
     });
     assert.equal(json.exitCode, 0);
     assert.equal(json.stderr, '');
     assert.equal(parseJsonOutput(json.stdout).status, 'warning');
 
-    const human = await runCommand({
-      file: process.execPath,
-      args: [cliPath, 'doctor', '--root', fixture.consumerRoot],
-      cwd: projectRoot,
+    const human = await runCli(['doctor', '--root', fixture.consumerRoot], {
       env: { USERPROFILE: profileRoot, HOME: profileRoot },
     });
     assert.equal(human.exitCode, 0);
@@ -566,11 +621,7 @@ test('contract gates fail before discovery and omitted root uses cwd', async () 
       '    target: generated/hello.txt',
       '',
     ].join('\n'));
-    const omittedRoot = await runCommand({
-      file: process.execPath,
-      args: [cliPath, 'doctor', '--json'],
-      cwd: fixture.consumerRoot,
-    });
+    const omittedRoot = await runCli(['doctor', '--json'], { cwd: fixture.consumerRoot });
     assert.equal(omittedRoot.exitCode, 0);
     assert.equal(omittedRoot.stderr, '');
     assert.equal(parseJsonOutput(omittedRoot.stdout).actions[0].state, 'satisfied');

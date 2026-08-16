@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { runDoctor } from './doctor.ts';
@@ -56,6 +59,7 @@ export async function main(argv = process.argv.slice(2)) {
   return result.exitCode;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1]
+  && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main().then((code) => { process.exitCode = code; });
 }
