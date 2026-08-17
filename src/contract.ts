@@ -184,7 +184,7 @@ function reservedDiagnostics<K extends DocumentKind>(
 
   for (const [entry, path] of selections) {
     if (!Object.hasOwn(entry, 'recipes')) continue;
-    const recipes = entry.recipes!;
+    const recipes = entry.recipes as string[];
     diagnostics.push(diagnostic(
       recipes.length === 0 ? 'recipes-empty' : 'recipes-not-supported',
       recipes.length === 0
@@ -212,7 +212,7 @@ export function validateDocument<K extends DocumentKind>({
   recipe,
 }: ValidateDocumentOptions<K>): ValidationResult<DocumentByKind[K]> {
   if (!Object.hasOwn(validators, kind)) throw new TypeError(`Unsupported document kind: ${kind}`);
-  const validator = validators[kind]!;
+  const validator = validators[kind] as ValidateFunction<unknown>;
   let yamlDocuments: ReturnType<typeof parseAllDocuments>;
   try {
     yamlDocuments = parseAllDocuments(text, {
@@ -242,7 +242,7 @@ export function validateDocument<K extends DocumentKind>({
     };
   }
 
-  const yamlDocument = yamlDocuments[0]!;
+  const yamlDocument = yamlDocuments[0] as ReturnType<typeof parseAllDocuments>[number];
   const value: unknown = yamlDocument.toJS();
   if (!isSchemaVersionRecord(value)) {
     return { value: undefined, diagnostics: [diagnostic(
@@ -252,7 +252,7 @@ export function validateDocument<K extends DocumentKind>({
     )] };
   }
   if (value.schemaVersion !== 1) {
-    let schemaVersion;
+    let schemaVersion: string | undefined;
     try {
       schemaVersion = JSON.stringify(value.schemaVersion);
     } catch {

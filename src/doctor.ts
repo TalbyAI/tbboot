@@ -343,7 +343,8 @@ async function collectSourceSteps(
         }),
       };
       descriptor.inputPath = await resolveContained(sourceRoot, descriptor.recipeRoot, descriptor.input);
-      descriptor.targetPath = await resolveContained(envelope.consumerRoot!, envelope.consumerRoot!, descriptor.target);
+      const consumerRoot = envelope.consumerRoot as string;
+      descriptor.targetPath = await resolveContained(consumerRoot, consumerRoot, descriptor.target);
       descriptors.push(descriptor);
     }
   }
@@ -532,7 +533,7 @@ async function evaluateDescriptor(descriptor: StepDescriptor, envelope: DoctorEn
     return;
   }
 
-  const result = fragmentState(target.toString('utf8'), input.toString('utf8'), descriptor.marker!);
+  const result = fragmentState(target.toString('utf8'), input.toString('utf8'), descriptor.marker as string);
   descriptor.action.state = result.state;
   if (result.code !== undefined) {
     addStepDiagnostic(
@@ -605,7 +606,7 @@ export async function runDoctor(root: string): Promise<DoctorResult> {
     if (sourceRoot === undefined) continue;
     const key = pathKey(sourceRoot);
     if (seenSources.has(key)) {
-      const firstIndex = seenSources.get(key)!;
+      const firstIndex = seenSources.get(key) as number;
       envelope.diagnostics.push(diagnostic(
         'duplicate-source',
         `Source duplicates declaration at /sources/${firstIndex}/locator/path; remove one duplicate declaration`,
