@@ -13,14 +13,21 @@
     "check": "node --check src/cli.ts && node --check src/contract.ts && node --check src/doctor.ts && node --check test/doctor.e2e.test.ts",
     "test": "node --test test/doctor.e2e.test.ts",
     "doctor": "node src/cli.ts doctor",
-    "typecheck": "tsc --project tsconfig.json --noEmit"
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "lint": "biome lint src test",
+    "lint:fix": "biome lint --write src test",
+    "format:check": "markdownlint-cli2",
+    "format:md": "markdownlint-cli2 --fix",
+    "build": "node --check src/cli.ts"
   },
   "dependencies": {
     "ajv": "^8.17.1",
     "yaml": "^2.8.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@types/node": "^26.2.0",
+    "markdownlint-cli2": "^0.23.2",
     "typescript": "^7.0.2"
   }
 }
