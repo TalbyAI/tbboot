@@ -22,23 +22,23 @@ Use the following six canonical commands in `package.json`:
 }
 ```
 
-`biome check` is the code gate because the existing `biome.json` includes
-`src/**` and `test/**`; newly added supported source files in those directories
-are therefore included automatically. The TypeScript configuration covers the
-same directories. The existing `build` script remains the entrypoint-specific
-Node syntax check for `src/cli.ts`.
+`biome check` is the code gate because the `biome.json` introduced by this
+change includes `src/**` and `test/**`; newly added supported source files in
+those directories are therefore included automatically. The TypeScript
+configuration covers the same directories. This change also adds `build` as
+the entrypoint-specific Node syntax check for `src/cli.ts`.
 
 The old `lint`, `lint:fix`, `format:check`, and `format:md` names are removed.
-Existing `test`, `doctor`, `typecheck`, and `build` commands remain unchanged.
+Existing `test`, `doctor`, and `typecheck` commands remain unchanged.
 
 ## CI impact
 
 The workflow must stop invoking removed script names. Its separate Markdown and
-code quality steps will use `npm run check:md` and `npm run check:code`; the
-existing build, typecheck, and test steps remain. The old aggregate syntax step
-is removed because the aggregate `check` command is now the local convenience
-for Markdown and code quality, while `build` and `typecheck` provide the
-remaining production checks in CI.
+code quality steps will use `npm run check:md` and `npm run check:code`;
+typecheck and test remain, and the new build step validates the entrypoint. The
+old aggregate syntax step is removed because the aggregate `check` command is
+now the local convenience for Markdown and code quality, while `build` and
+`typecheck` provide the remaining production checks in CI.
 
 ## Verification
 
@@ -49,7 +49,8 @@ and the workflow will be inspected for references to removed script names.
 
 ## Scope
 
-No new dependency, formatter configuration, source abstraction, test
-framework, runtime behavior, or prototype pipeline is added. Mechanical
-formatting changes made by `fix:code` or `fix:md` are limited to files already
-covered by the existing quality configurations.
+The enclosing change adds only `@biomejs/biome` and `markdownlint-cli2` as
+development dependencies, updates the lockfile, and versions their two scoped
+configuration files. No source abstraction, test framework, runtime behavior,
+or prototype pipeline is added. Mechanical formatting changes made by
+`fix:code` or `fix:md` stay within those configured scopes.

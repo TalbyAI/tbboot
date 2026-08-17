@@ -4,7 +4,7 @@
 
 **Goal:** Normalize the local quality scripts and finish a reproducible Windows GitHub Actions pipeline for Markdown, code, typecheck, build, and tests.
 
-**Architecture:** Reuse the existing Biome, markdownlint, and configuration files. `package.json` exposes six canonical local quality commands; the workflow runs the two read-only check components plus typecheck, build, and tests as separate fail-fast steps on `windows-latest` after `npm ci`.
+**Architecture:** Add Biome and markdownlint as locked development dependencies with scoped configuration files. `package.json` exposes six canonical local quality commands; the workflow runs the two read-only check components plus typecheck, build, and tests as separate fail-fast steps on `windows-latest` after `npm ci`.
 
 **Tech Stack:** Node `>=24.12 <25`, npm, ESM with native Node type stripping, `@biomejs/biome`, `markdownlint-cli2`, GitHub Actions `actions/checkout@v6`, `actions/setup-node@v6`, TypeScript, and Node’s built-in test runner.
 
@@ -13,21 +13,21 @@
 - The package is ESM and uses native Node type stripping to execute `src/cli.ts` directly.
 - `package.json` declares Node `>=24.12 <25` and the bin points to `src/cli.ts`.
 - CI uses `windows-latest`, runs `npm ci`, and reads the Node version from `package.json` with `node-version-file: package.json`.
-- Biome `check` runs over `src/` and `test/`, covering lint and code format; its existing scope configuration remains unchanged.
+- Biome `check` runs over `src/` and `test/`, covering lint and code format through the configuration introduced by this change.
 - Markdown checks cover only `AGENTS.md`, `CONTEXT.md`, and `docs/**/*.md`; `prototypes/**` is excluded.
 - `fix:md`, `fix:code`, and `fix` are opt-in local fixes and are never run by CI or hooks.
-- No dependency, formatter configuration, transpiler, bundler, generated output, coverage, security analysis, deployment, publication, or new test framework is added.
+- Add only `@biomejs/biome` and `markdownlint-cli2` as development dependencies, update the lockfile, and add their scoped configurations. Do not add a transpiler, bundler, generated output, coverage, security analysis, deployment, publication, or new test framework.
 - Do not change the JSON contract, diagnostics, exit codes, CLI behavior, persistence, or production implementation semantics.
 - `prototypes/` is not part of the main repository pipeline.
 - Do not use `continue-on-error`, `|| true`, or equivalent failure suppression.
-- Keep commits on the existing `issue/33-ci-quality-pipeline` branch and never push automatically.
+- Keep commits on the existing `issue/33-ci-quality-pipeline` branch and follow the push policy in `AGENTS.md`.
 
 ---
 
 ## File Map
 
 - Modify `package.json`: replace the old quality script names with the six canonical commands.
-- Verify `package-lock.json`, `biome.json`, and `.markdownlint-cli2.jsonc`: reuse the existing dependencies and scopes without adding configuration.
+- Modify `package-lock.json`, `biome.json`, and `.markdownlint-cli2.jsonc`: lock the two approved tools and add their scoped configurations.
 - Modify the existing canonical Markdown documents listed in Task 3: apply fixable standard-rule corrections without changing their meaning.
 - Modify `.github/workflows/ci.yml`: run the five CI quality gates on pull requests and pushes to `main`.
 - Modify `src/cli.ts`, `src/contract.ts`, `src/doctor.ts`, or `test/doctor.e2e.test.ts` only when `fix:code` reports a mechanical change; retain behavior and verify the existing suite.
@@ -47,9 +47,9 @@ Task 1 produces these exact six local quality commands, which later tasks and th
 }
 ```
 
-The existing `biome.json` provides scope `src/**` and `test/**`; `biome check` uses that scope for both lint and format.
+The new `biome.json` provides scope `src/**` and `test/**`; `biome check` uses that scope for both lint and format.
 
-The existing `.markdownlint-cli2.jsonc` provides the Markdown globs; invoking `markdownlint-cli2` with no arguments uses the same scope locally and in CI.
+The new `.markdownlint-cli2.jsonc` provides the Markdown globs; invoking `markdownlint-cli2` with no arguments uses the same scope locally and in CI.
 
 Task 4 consumes `check:md`, `check:code`, `typecheck`, `build`, and `test` and exposes each as a separate workflow step. It does not expose the local aggregate `check` as an additional CI step.
 
@@ -58,8 +58,9 @@ Task 4 consumes `check:md`, `check:code`, `typecheck`, `build`, and `test` and e
 **Files:**
 
 - Modify: `package.json`
+- Modify: `package-lock.json`
 
-**Interfaces:** Produces exact local `check:md`, `check:code`, `check`, `fix:md`, `fix:code`, and `fix` commands while preserving `test`, `doctor`, `typecheck`, and `build`.
+**Interfaces:** Produces exact local `check:md`, `check:code`, `check`, `fix:md`, `fix:code`, and `fix` commands while preserving `test`, `doctor`, and `typecheck` and adding `build`.
 
 - [ ] **Step 1: Record the current regression baseline**
 
@@ -74,18 +75,16 @@ npm run build
 
 Expected: all commands exit `0`; the current test run reports 18 passing tests and 1 platform-specific skipped test. Do not change source files during this baseline.
 
-- [ ] **Step 2: Verify the existing dependency and configuration boundary**
+- [ ] **Step 2: Add the approved development dependencies**
 
 Run:
 
 ```powershell
-npm ci
+npm install --save-dev @biomejs/biome@^2.5.8 markdownlint-cli2@^0.23.2
 npm pkg get devDependencies
-Test-Path biome.json
-Test-Path .markdownlint-cli2.jsonc
 ```
 
-Expected: `npm ci` succeeds; `@biomejs/biome` and `markdownlint-cli2` are already under `devDependencies`; both configuration files exist; and this task does not change `package-lock.json`.
+Expected: both tools are under `devDependencies`, `package-lock.json` records their complete dependency graph, and no other direct dependency is added.
 
 - [ ] **Step 3: Add the exact npm scripts**
 
@@ -100,7 +99,7 @@ Replace the old quality entries with these exact entries:
 "fix": "npm run fix:md && npm run fix:code"
 ```
 
-Remove `lint`, `lint:fix`, `format:check`, and `format:md`. Preserve these commands exactly: `test`, `doctor`, `typecheck`, and `build`; `build` remains `node --check src/cli.ts` and does not emit JavaScript.
+Remove `lint`, `lint:fix`, `format:check`, and `format:md`. Preserve `test`, `doctor`, and `typecheck` exactly. Add `build` as `node --check src/cli.ts`; it must not emit JavaScript.
 
 - [ ] **Step 4: Verify the clean-install dependency boundary**
 
@@ -112,29 +111,30 @@ npm pkg get scripts.check:md scripts.check:code scripts.check scripts.fix:md scr
 rg -n '"(lint|lint:fix|format:check|format:md)"' package.json
 ```
 
-Expected: `npm ci` succeeds using the unchanged lockfile, the six canonical scripts match the exact values above, the preserved scripts remain available, and `rg` finds no removed script name in `package.json`.
+Expected: `npm ci` succeeds using the updated lockfile, the six canonical scripts match the exact values above, the preserved scripts remain available, and `rg` finds no removed script name in `package.json`.
 
 - [ ] **Step 5: Commit the package boundary**
 
 ```powershell
-git add package.json
+git add package.json package-lock.json
 git commit -m "chore: normalize quality scripts"
 ```
 
-### Task 2: Verify the Biome code gate and keep scoped fixes safe
+### Task 2: Configure the Biome code gate and keep scoped fixes safe
 
 **Files:**
 
+- Create: `biome.json`
 - Modify only when reported by Biome: `src/cli.ts`
 - Modify only when reported by Biome: `src/contract.ts`
 - Modify only when reported by Biome: `src/doctor.ts`
 - Modify only when reported by Biome: `test/doctor.e2e.test.ts`
 
-**Interfaces:** Consumes the existing `@biomejs/biome` executable and `biome.json`, and produces the read-only `npm run check:code` gate over production source and tests plus the explicit local `npm run fix:code` command.
+**Interfaces:** Consumes the newly added `@biomejs/biome` executable and `biome.json`, and produces the read-only `npm run check:code` gate over production source and tests plus the explicit local `npm run fix:code` command.
 
-- [ ] **Step 1: Verify the existing Biome configuration**
+- [ ] **Step 1: Create the Biome configuration**
 
-Confirm `biome.json` contains the existing scope and recommended linter:
+Create `biome.json` with the approved scope and recommended linter:
 
 ```json
 {
@@ -151,7 +151,7 @@ Confirm `biome.json` contains the existing scope and recommended linter:
 }
 ```
 
-Keep this configuration unchanged. Do not add a `prototypes` glob, a schema/document glob, generated-file coverage, a global suppression, or a separate formatter configuration.
+Keep this configuration limited to the shown scope. Do not add a `prototypes` glob, a schema/document glob, generated-file coverage, a global suppression, or a separate formatter configuration.
 
 - [ ] **Step 2: Run the code gate before applying fixes**
 
@@ -199,7 +199,7 @@ git commit -m "chore: normalize Biome code gate"
 
 **Files:**
 
-- Verify: `.markdownlint-cli2.jsonc`
+- Create: `.markdownlint-cli2.jsonc`
 - Modify: `AGENTS.md`
 - Modify: `CONTEXT.md` only if the fix command reports a fixable violation
 - Modify: `docs/agents/domain.md`
@@ -209,11 +209,11 @@ git commit -m "chore: normalize Biome code gate"
 - Modify: `docs/superpowers/plans/2026-08-16-issue-31-static-typecheck.md`
 - Modify: other files under `docs/**/*.md` only when the standard fix command identifies a concrete fixable violation
 
-**Interfaces:** Consumes the existing `.markdownlint-cli2.jsonc` through `check:md` and `fix:md`, sharing the same Markdown scope between local development and CI while keeping `prototypes/**` out of the file set.
+**Interfaces:** Consumes the newly added `.markdownlint-cli2.jsonc` through `check:md` and `fix:md`, sharing the same Markdown scope between local development and CI while keeping `prototypes/**` out of the file set.
 
-- [ ] **Step 1: Verify the existing Markdown configuration**
+- [ ] **Step 1: Create the Markdown configuration**
 
-Confirm `.markdownlint-cli2.jsonc` contains:
+Create `.markdownlint-cli2.jsonc` with:
 
 ```jsonc
 {
@@ -267,7 +267,8 @@ Expected: `check:md` exits `0`; the output does not mention `prototypes/`; only 
 - [ ] **Step 5: Commit the Markdown gate**
 
 ```powershell
-git add AGENTS.md CONTEXT.md docs/agents/domain.md docs/PROJECT-APPROACH.md docs/superpowers/plans/2026-08-15-issue-12-acceptance-fixture.md docs/superpowers/plans/2026-08-16-issue-13-production-doctor-cli.md docs/superpowers/plans/2026-08-16-issue-31-static-typecheck.md
+$reviewedDocs = git diff --name-only --diff-filter=ACMRT -- 'docs/**/*.md'
+$reviewedDocs | ForEach-Object { git add -- $_ }
 git commit -m "chore: normalize Markdown quality gate"
 ```
 
@@ -291,12 +292,17 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -347,8 +353,9 @@ Run:
 ```powershell
 $workflow = Get-Content -Raw .github/workflows/ci.yml
 if ($workflow -notmatch 'pull_request:' -or $workflow -notmatch 'branches: \[main\]' -or $workflow -notmatch 'runs-on: windows-latest') { throw 'CI trigger or runner scope is incorrect' }
-if ($workflow -notmatch 'actions/checkout@v6' -or $workflow -notmatch 'actions/setup-node@v6' -or $workflow -notmatch 'node-version-file: package.json' -or $workflow -notmatch 'cache: npm') { throw 'CI setup is incorrect' }
+if ($workflow -notmatch 'permissions:\s*\r?\n\s+contents: read' -or $workflow -notmatch 'actions/checkout@v6' -or $workflow -notmatch 'persist-credentials: false' -or $workflow -notmatch 'actions/setup-node@v6' -or $workflow -notmatch 'node-version-file: package.json' -or $workflow -notmatch 'cache: npm') { throw 'CI setup is incorrect' }
 foreach ($command in @('npm run check:md', 'npm run check:code', 'npm run typecheck', 'npm run build', 'npm test')) { if ($workflow.IndexOf($command) -lt 0) { throw "Missing CI gate: $command" } }
+if ($workflow.IndexOf('npm run check:md') -gt $workflow.IndexOf('npm run check:code')) { throw 'Markdown gate must run before the code gate' }
 if ($workflow -match '(?m)^\s*run:\s*npm run check\s*$|npm run lint|npm run format:check|continue-on-error|\|\| true') { throw 'A removed command or failure suppression is present' }
 
 git add .github/workflows/ci.yml
@@ -359,7 +366,7 @@ git commit -m "ci: normalize quality pipeline steps"
 
 **Files:** None beyond the files already listed above.
 
-**Interfaces:** Confirms the six local scripts, unchanged dependency/configuration boundary, five workflow gates, and existing runtime suite work together from a clean install.
+**Interfaces:** Confirms the six local scripts, approved dependency/configuration boundary, five workflow gates, and existing runtime suite work together from a clean install.
 
 - [ ] **Step 1: Recreate the CI install and run the exact verification sequence**
 
@@ -408,7 +415,8 @@ $prototypeChanges = git status --short -- prototypes
 if ($prototypeChanges) { $prototypeChanges; throw 'The main CI work changed prototypes' }
 
 git status --short
-git diff --stat HEAD~4..HEAD
+$baseCommit = git merge-base HEAD origin/main
+git diff --stat "$baseCommit..HEAD"
 ```
 
 Expected: no emitted JavaScript or maps exist outside excluded prototype content; no prototype file changed; and the final diff contains only normalized scripts, approved Markdown/code-quality corrections, and the workflow.
@@ -427,8 +435,8 @@ Expected: the existing 19-test suite remains 18 passed and 1 skipped on this Win
 
 ## Self-Review
 
-- Spec coverage: Task 1 covers the six canonical local scripts and removed names; Task 2 covers the existing Biome scope and code checks/fixes; Task 3 covers Markdown scope, fixes, and prototype exclusion; Task 4 covers triggers, Windows runner, Node setup, `npm ci`, and five identifiable fail-fast checks; Task 5 covers exact-script verification, generated-output checks, and regression protection.
+- Spec coverage: Task 1 covers the two approved development dependencies, six canonical local scripts, lockfile, and removed names; Task 2 covers the Biome scope and code checks/fixes; Task 3 covers Markdown scope, fixes, and prototype exclusion; Task 4 covers triggers, least-privilege checkout, Windows runner, Node setup, `npm ci`, and five identifiable fail-fast checks; Task 5 covers exact-script verification, generated-output checks, and regression protection.
 - Acceptance coverage: every Issue #33 criterion is directly exercised by a listed command or workflow assertion.
 - Placeholder scan: every implementation step names its file paths, configuration contents, commands, and expected outcomes.
-- Scope review: no task adds a dependency, formatter configuration, compiler, bundler, test framework, deployment, release, coverage, security analysis, prototype pipeline, or production behavior change.
+- Scope review: only the two approved development dependencies and their scoped configurations are added; no task adds a compiler, bundler, test framework, deployment, release, coverage, security analysis, prototype pipeline, or production behavior change.
 - Baseline evidence: `npm run check`, `npm test`, and `npm run typecheck` already pass; Markdown baseline is 548 findings, with `MD013` accounting for 519 and therefore the only configured exception.

@@ -5,12 +5,17 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -21,11 +26,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check TypeScript and JavaScript quality
-        run: npm run check:code
-
       - name: Check Markdown format
         run: npm run check:md
+
+      - name: Check TypeScript and JavaScript quality
+        run: npm run check:code
 
       - name: Typecheck TypeScript
         run: npm run typecheck

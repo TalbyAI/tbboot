@@ -4,7 +4,7 @@
 
 **Goal:** Normalize the repository's local quality scripts and update CI to call the canonical commands from the design.
 
-**Architecture:** Keep the existing Biome, Markdownlint, TypeScript, build, and test configuration. Change only npm script names/commands and the CI step references; no production code or dependencies change.
+**Architecture:** The enclosing change introduces Biome, Markdownlint, their scoped configurations, a lockfile update, and the `build` command. Normalize the npm script names and CI references without changing production code.
 
 **Tech Stack:** Node.js 24, npm, Biome, markdownlint-cli2, GitHub Actions.
 
@@ -12,9 +12,9 @@
 
 - `package.json` must expose the exact six canonical quality commands from the design.
 - Remove `lint`, `lint:fix`, `format:check`, and `format:md`.
-- Keep `test`, `doctor`, `typecheck`, and `build` unchanged.
+- Keep `test`, `doctor`, and `typecheck` unchanged; retain the new `build` command as `node --check src/cli.ts`.
 - CI uses `check:md` and `check:code` as separate steps and removes the old aggregate syntax step.
-- Do not add dependencies, runtime behavior, build artifacts, or prototype pipeline coverage.
+- Add only `@biomejs/biome` and `markdownlint-cli2` as development dependencies and their scoped configurations; do not add runtime behavior, build artifacts, or prototype pipeline coverage.
 
 ---
 
@@ -47,11 +47,11 @@ Expected `package.json` entries:
 
 - [ ] **Step 2: Update `package.json`**
 
-Replace only the existing quality scripts with the six entries above. Leave `test`, `doctor`, `typecheck`, and `build` byte-for-byte unchanged.
+Replace the existing quality scripts with the six entries above. Leave `test`, `doctor`, and `typecheck` byte-for-byte unchanged, and retain `build` as `node --check src/cli.ts`.
 
 - [ ] **Step 3: Update `.github/workflows/ci.yml`**
 
-Use `npm run check:code` for the TypeScript/JavaScript quality step, `npm run check:md` for the Markdown step, and remove the separate `npm run check` syntax step. Keep typecheck, build, and test steps unchanged.
+Use `npm run check:md` before `npm run check:code`, remove the separate `npm run check` syntax step, and retain the typecheck, new build, and test steps.
 
 - [ ] **Step 4: Assert the script contract**
 

@@ -29,9 +29,9 @@ distinto de cero y hará fallar el job.
   `src/cli.ts` directamente.
 - `package.json` declara Node `>=24.12 <25` y el bin del paquete apunta a
   `src/cli.ts`.
-- El branch ya contiene `@biomejs/biome`, `markdownlint-cli2`, `biome.json` y
-  `.markdownlint-cli2.jsonc`; esta actualización no añade dependencias ni
-  configuraciones nuevas.
+- Este cambio introduce `@biomejs/biome` y `markdownlint-cli2` como
+  `devDependencies`, actualiza `package-lock.json` y versiona `biome.json` y
+  `.markdownlint-cli2.jsonc`.
 - El objetivo de compatibilidad documentado es Windows x64; el workflow usará
   `windows-latest` para probar el entorno soportado.
 - `prototypes/` no forma parte del pipeline principal.
@@ -40,8 +40,8 @@ distinto de cero y hará fallar el job.
 
 ## Enfoque aprobado
 
-Se reutilizarán `@biomejs/biome` y `markdownlint-cli2` como dependencias de
-desarrollo ya presentes.
+Se incorporarán `@biomejs/biome` y `markdownlint-cli2` como dependencias de
+desarrollo reproducibles mediante `npm ci`.
 
 Biome ejecutará `check` sobre `src/` y `test/`, con sus reglas recomendadas. El
 gate cubre lint y formato de código dentro de ese alcance; `fix:code` será una
@@ -83,24 +83,24 @@ en la configuración; no se desactivará globalmente el lint.
 }
 ```
 
-Se eliminan `lint`, `lint:fix`, `format:check` y `format:md`. `test`, `doctor`,
-`typecheck` y `build` permanecen sin cambios; `build` seguirá siendo
-`node --check src/cli.ts`. El lockfile y las dependencias permanecen sin
-cambios. `fix:md`, `fix:code` y `fix` son operaciones opt-in para desarrollo
-local; no se ejecutarán en CI ni mediante hooks automáticos.
+Se eliminan `lint`, `lint:fix`, `format:check` y `format:md`. `test`, `doctor` y
+`typecheck` permanecen sin cambios. Se incorpora `build` como
+`node --check src/cli.ts`; `package-lock.json` se actualiza con las dos nuevas
+dependencias de desarrollo. `fix:md`, `fix:code` y `fix` son operaciones opt-in
+para desarrollo local; no se ejecutarán en CI ni mediante hooks automáticos.
 
 `npm run check` deja de ser el agregado de comprobaciones de sintaxis de Node y
 pasa a ser solo la conveniencia local para Markdown y código.
 
 ### Configuración de Biome
 
-Se conservará el `biome.json` existente, con el linter habilitado, reglas
-recomendadas y alcance limitado a `src/` y `test/`. La configuración no
+Se versionará `biome.json` con el linter habilitado, reglas recomendadas y
+alcance limitado a `src/` y `test/`. La configuración no
 incluirá prototipos, esquemas, documentación ni código generado.
 
 ### Configuración de Markdown
 
-Se conservará `.markdownlint-cli2.jsonc` con los globs de los tres grupos
+Se versionará `.markdownlint-cli2.jsonc` con los globs de los tres grupos
 anteriores y la exclusión explícita de `prototypes/**`. Ejecutar
 `markdownlint-cli2` sin argumentos usará esa configuración, por lo que el
 script local y el paso de CI tendrán exactamente el mismo alcance.
@@ -116,7 +116,8 @@ on:
     branches: [main]
 ```
 
-El job usará `windows-latest`, `actions/checkout@v6` y
+El workflow limitará `GITHUB_TOKEN` a `contents: read`. El job usará
+`windows-latest`, `actions/checkout@v6` con `persist-credentials: false` y
 `actions/setup-node@v6`.
 `setup-node` leerá `engines.node` desde `package.json` mediante
 `node-version-file: package.json` y habilitará la caché de npm. Después de
