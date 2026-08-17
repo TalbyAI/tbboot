@@ -23,6 +23,7 @@
 ### Task 1: Add the isolated fixture package and template files
 
 **Files:**
+
 - Create: `prototypes/issue-12/package.json`
 - Create: `prototypes/issue-12/fixture/consumer/tbboot.yaml`
 - Create: `prototypes/issue-12/fixture/consumer/README.md`
@@ -31,6 +32,7 @@
 - Create: `prototypes/issue-12/fixture/source/baseline/files/hello.txt`
 
 **Interfaces:**
+
 - Produces a self-contained npm package whose only command is `npm test`.
 - Produces a valid minimal fixture shape for later local Source CLI tests.
 
@@ -89,10 +91,12 @@ Expected: FAIL because `test/prototype.test.mjs` has not been created yet, but n
 ### Task 2: Add fixture lifecycle and filesystem snapshot tests
 
 **Files:**
+
 - Create: `prototypes/issue-12/harness.mjs`
 - Create: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
+
 - `createFixture({ copy = cp, remove = rm } = {}) -> Promise<{ root, consumerRoot, sourceRoot, cleanup }>` copies `fixture/` into a unique temporary directory, removes the root if copying fails, preserves both copy and cleanup failures in an `AggregateError`, and shares one in-flight cleanup promise, retrying after a failed removal.
 - `snapshotFiles(root) -> Promise<Array<{ path, bytes }>>` recursively records sorted relative file paths and `Buffer` contents.
 
@@ -238,11 +242,13 @@ Expected: 2 passing tests and 0 failures.
 ### Task 3: Add process execution, JSON parsing, and read-only acceptance tests
 
 **Files:**
+
 - Modify: `prototypes/issue-12/harness.mjs`
 - Create: `prototypes/issue-12/test/fixtures/cli.mjs`
 - Modify: `prototypes/issue-12/test/prototype.test.mjs`
 
 **Interfaces:**
+
 - `runCommand({ file, args = [], cwd, env, timeoutMs = 30000, ready, readyTimeoutMs = timeoutMs }) -> Promise<{ exitCode, stdout, stderr }>` launches without a shell, does not merge streams, starts the command timeout after an optional readiness marker, tracks process exit separately from stdio closure, and terminates/reaps a child that exceeds the timeout before rejecting with `ETIMEDOUT`; POSIX uses `SIGTERM` then `SIGKILL` after 100 ms, while Windows uses forceful termination.
 - `parseJsonOutput(stdout) -> unknown` parses exactly one non-empty JSON document.
 
@@ -542,10 +548,12 @@ Expected: all lifecycle, snapshot, process, JSON, and read-only tests pass with 
 ### Task 4: Document extension and run the complete verification
 
 **Files:**
+
 - Create: `prototypes/issue-12/README.md`
 - Modify: `prototypes/issue-12/test/prototype.test.mjs` only if the documented extension example reveals a missing public seam.
 
 **Interfaces:**
+
 - Documentation points future acceptance tests at `createFixture`, `runCommand`, `snapshotFiles`, and `parseJsonOutput`.
 
 - [ ] **Step 1: Write the prototype README.**

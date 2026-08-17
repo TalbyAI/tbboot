@@ -151,6 +151,7 @@ The `DocumentByKind` entries for documents not consumed by production remain int
 ### Task 1: Bootstrap strict typechecking
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Create: `tsconfig.json`
@@ -238,6 +239,7 @@ git commit -m "chore: add strict TypeScript typecheck"
 ### Task 2: Type the contract validation boundary
 
 **Files:**
+
 - Modify: `src/contract.ts`
 
 **Interfaces:** Consumes the existing AJV/YAML implementation and produces the exported `DocumentKind`, document models, `Diagnostic`, `ValidationResult`, and typed `validateDocument` contract used by `src/doctor.ts`.
@@ -315,6 +317,7 @@ git commit -m "refactor: type contract validation boundaries"
 ### Task 3: Type doctor discovery and Artifact evaluation
 
 **Files:**
+
 - Modify: `src/doctor.ts`
 
 **Interfaces:** Consumes `Diagnostic`, `DocumentKind`, `RecipeDocument`, `Step`, `SourceReference`, and typed `validateDocument`; produces `ArtifactAction`, `DoctorEnvelope`, `DoctorResult`, and the typed `runDoctor` boundary.
@@ -422,6 +425,7 @@ git commit -m "refactor: type doctor diagnostics and actions"
 ### Task 4: Type the CLI, E2E boundary, and harness declaration
 
 **Files:**
+
 - Modify: `src/cli.ts`
 - Modify: `test/doctor.e2e.test.ts`
 - Create conditionally: `prototypes/issue-12/harness.d.mts`
@@ -563,6 +567,7 @@ git commit -m "refactor: type CLI and E2E boundaries"
 ### Task 5: Clean-install and scope verification
 
 **Files:**
+
 - No new production files; verify the files changed by Tasks 1–4.
 
 **Interfaces:** Verifies the public `typecheck` command, clean dependency lock, no-emit guarantee, runtime regression suite, and Issue #31 scope.
