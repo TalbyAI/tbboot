@@ -10,15 +10,16 @@
     "tbboot": "src/cli.ts"
   },
   "scripts": {
-    "check": "node --check src/cli.ts && node --check src/contract.ts && node --check src/doctor.ts && node --check test/doctor.e2e.test.ts",
-    "test": "node --test test/doctor.e2e.test.ts",
+    "check:md": "markdownlint-cli2",
+    "check:code": "biome check src test",
+    "check": "npm run check:md && npm run check:code",
+    "fix:md": "markdownlint-cli2 --fix",
+    "fix:code": "biome check --write src test",
+    "fix": "npm run fix:md && npm run fix:code",
+    "build": "node --check src/cli.ts",
     "doctor": "node src/cli.ts doctor",
+    "test": "node --test test/doctor.e2e.test.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "lint": "biome lint src test",
-    "lint:fix": "biome lint --write src test",
-    "format:check": "markdownlint-cli2",
-    "format:md": "markdownlint-cli2 --fix",
-    "build": "node --check src/cli.ts"
   },
   "dependencies": {
     "ajv": "^8.17.1",
