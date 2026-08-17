@@ -76,10 +76,12 @@ producción del repositorio.
 
 ### Protección de ramas y pull requests
 
-- Nunca hacer `push` automáticamente.
-- Nunca aprobar pull requests automáticamente.
-- Nunca escribir directamente sobre la rama `main`.
-- Estas acciones solo se permiten cuando el usuario las solicite explícitamente.
+- Hacer `push` solo cuando el usuario lo solicite explícitamente o durante la
+  persecución de un objetivo activo con Goal dedicado a corregir hallazgos de
+  CodeRabbit. En ese caso, hacer `push` únicamente a la rama del pull request y
+  solo de commits creados dentro del objetivo para esas correcciones.
+- Aprobar pull requests o escribir directamente sobre la rama `main` requiere
+  siempre una solicitud explícita del usuario.
 - Las ramas y commits locales fuera de `main` se permiten cuando forman parte de
   la tarea solicitada; no crear ramas ni commits para trabajo fuera de ese
   alcance.

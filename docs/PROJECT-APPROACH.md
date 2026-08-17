@@ -1,10 +1,10 @@
-## Project Approach: contrato de entorno del repositorio
+# Project Approach: contrato de entorno del repositorio
 
-### TL;DR
+## TL;DR
 
 Todavía no se ha decidido construir una herramienta propia. El siguiente paso es un prototipo comparativo que pruebe el núcleo frente a una composición de herramientas existentes. Solo se construirá un producto diferenciado si demuestra una ventaja clara.
 
-### Validated Prototype Direction
+## Validated Prototype Direction
 
 The prototype will use a Windows test repository and compare:
 
@@ -33,7 +33,7 @@ El núcleo debería ser:
 
 Recomiendo empezar con TypeScript/Node y distribución mediante npm. Mantendría Go como segunda fase si Node/npm resulta ser un obstáculo de bootstrap.
 
-### Project Frame
+## Project Frame
 
 El producto resuelve una diferencia importante:
 
@@ -62,7 +62,7 @@ Criterios principales:
 
 La métrica de éxito inicial debería ser sencilla: un desarrollador nuevo ejecuta un comando, obtiene un diagnóstico claro y puede dejar el repositorio listo sin copiar instrucciones manualmente.
 
-### Evidence Reviewed
+## Evidence Reviewed
 
 - Descripción y restricciones proporcionadas por ti.
 - No se inspeccionó el repositorio actual, por indicación expresa.
@@ -70,7 +70,7 @@ La métrica de éxito inicial debería ser sencilla: un desarrollador nuevo ejec
 - No se usaron X, Reddit ni YouTube.
 - Se revisaron Dev Containers, mise, chezmoi, Ansible, skills CLI, npm y Go.
 
-### Comparable Projects
+## Comparable Projects
 
 1. **Dev Container Specification** — [containers.dev](https://containers.dev/overview)
 
@@ -145,7 +145,7 @@ La métrica de éxito inicial debería ser sencilla: un desarrollador nuevo ejec
 
    Es un buen modelo de UX para instalar elementos concretos desde una fuente, seleccionar skills y aplicar un alcance determinado. Tu producto podría ofrecer un adaptador para skills posteriormente, pero no debería limitarse a ese dominio.
 
-### Arquitectura recomendada
+## Arquitectura recomendada
 
 ```text
 manifest.yaml
@@ -179,12 +179,12 @@ Los conceptos deben estar separados:
 
 El manifiesto selecciona artefactos. El catálogo posee las dependencias. Por tanto, si `service-baseline` depende de `node`, esa dependencia debe declararse en el catálogo, no repetirse en cada repositorio.
 
-### Modelo de artefacto
+## Modelo de artefacto
 
 El MVP debería soportar solo estos tipos:
 
 | Tipo | Ejemplo | Coste | Valor |
-|---|---|---:|---:|
+| --- | --- | ---: | ---: |
 | `file` | Crear `.editorconfig` | Bajo | Alto |
 | `text-block` | Insertar bloque en `AGENTS.md` | Bajo/medio | Alto |
 | `command` | Verificar `npm >= 10` | Bajo | Alto |
@@ -204,7 +204,7 @@ Contenido administrado
 
 Así puedes comprobar, actualizar y eliminar exactamente tu bloque sin intentar interpretar todo el Markdown.
 
-### Comandos
+## Comandos
 
 Separaría claramente declaración y aplicación:
 
@@ -229,7 +229,7 @@ El flujo de `install` debería ser:
 6. Aplicar cambios idempotentes.
 7. Ejecutar `doctor` de nuevo.
 
-### Qué debe declarar un catálogo
+## Qué debe declarar un catálogo
 
 Cada catálogo debería tener:
 
@@ -264,9 +264,9 @@ Reglas importantes:
 
 La búsqueda de catálogos y un registro central pueden esperar. Para el MVP basta con catálogos locales o repositorios Git versionados.
 
-### Prioridad coste-beneficio
+## Prioridad coste-beneficio
 
-#### MVP
+### MVP
 
 1. Manifiesto con esquema validable.
 2. `doctor` con salida humana y `--json`.
@@ -285,7 +285,7 @@ La compatibilidad multiplataforma debe dividirse en tres niveles:
 
 Puedes ofrecer los dos primeros desde el inicio y añadir proveedores de instalación progresivamente. Intentar soportar completamente `winget`, Homebrew, apt, Chocolatey, Scoop, npm, gestores de versiones y binarios descargables desde el primer día dispararía el coste.
 
-#### Segunda fase
+### Segunda fase
 
 - lockfile con versiones resueltas y hashes;
 - proveedores macOS/Linux;
@@ -294,7 +294,7 @@ Puedes ofrecer los dos primeros desde el inicio y añadir proveedores de instala
 - adaptador específico para skills;
 - variables limitadas para rutas y nombres de proyecto.
 
-#### Más adelante
+### Más adelante
 
 - plugins de terceros;
 - scripts arbitrarios con permisos explícitos;
@@ -304,9 +304,9 @@ Puedes ofrecer los dos primeros desde el inicio y añadir proveedores de instala
 - secretos;
 - servicios del sistema, drivers y configuración de máquina completa.
 
-### Stack y distribución
+## Stack y distribución
 
-#### Recomendación inicial: TypeScript + Node
+### Recomendación inicial: TypeScript + Node
 
 Es la mejor opción para validar el producto rápidamente:
 
@@ -327,7 +327,7 @@ El campo `bin` de npm permite publicar una orden ejecutable, y `npx` puede invoc
 
 El problema es el bootstrap: si el repositorio no tiene Node/npm, no puede ejecutar `npx`. Por eso TypeScript deja de ser la mejor opción si tus usuarios trabajan frecuentemente en repositorios sin Node.
 
-#### Alternativa: Go
+### Alternativa: Go
 
 Go gana cuando:
 
@@ -353,7 +353,7 @@ No recomendaría compilar Go en la máquina del usuario. Publicaría binarios pr
 
 Evitaría inicialmente un `postinstall` que descargue un binario remoto: los scripts de instalación pueden estar deshabilitados y añaden una superficie de ataque. GoReleaser documenta esta limitación en su publicación npm. [GoReleaser npm](https://www.goreleaser.com/customization/publish/npm/)
 
-### Seguridad mínima
+## Seguridad mínima
 
 Este producto escribe en el sistema y puede instalar software; la seguridad es parte del núcleo.
 
@@ -372,7 +372,7 @@ Debe tener desde el primer prototipo:
 
 Más adelante puedes añadir firmas de catálogos y attestations. Sigstore documenta la verificación de blobs firmados, y GitHub documenta attestations de artefactos. [Sigstore](https://docs.sigstore.dev/cosign/verifying/verify/), [GitHub Artifact Attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
 
-### Coste operativo
+## Coste operativo
 
 El MVP no necesita servidor, base de datos ni servicio gestionado:
 
@@ -390,7 +390,7 @@ El coste real aparecerá después en:
 - soporte de instalaciones fallidas;
 - mantenimiento de adaptadores por sistema operativo.
 
-### Alternativas
+## Alternativas
 
 1. **Go desde el primer día**
 
@@ -410,7 +410,7 @@ El coste real aparecerá después en:
 
    Son mejores si el requisito termina siendo reproducibilidad fuerte, aislamiento o control completo del toolchain. Tu recomendación deja de ser correcta cuando el host ya no debe modificarse o cuando la organización necesita entornos idénticos y efímeros.
 
-### Build Plan
+## Build Plan
 
 1. Crear un prototipo externo con un único repositorio de prueba:
    - comprobar `npm`;
@@ -429,7 +429,7 @@ El coste real aparecerá después en:
 
 6. Incorporar lockfile, hashes y proveedores adicionales solo después de observar qué instalaciones fallan realmente.
 
-### Failure Conditions
+## Failure Conditions
 
 La recomendación cambia si:
 

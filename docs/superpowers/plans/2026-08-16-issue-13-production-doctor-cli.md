@@ -84,6 +84,7 @@ function runDoctor(root: string): Promise<{
 ### Task 1: Bootstrap package and schema
 
 **Files:**
+
 - Create: `package.json`
 - Create: `package-lock.json`
 - Create: `schemas/contract-v1.json`
@@ -134,6 +135,7 @@ git commit -m "chore: bootstrap production tbboot package"
 ### Task 2: Contract validator and CLI boundary
 
 **Files:**
+
 - Create: `src/contract.ts`
 - Create: `src/cli.ts`
 - Create: `src/doctor.ts`
@@ -257,6 +259,7 @@ git commit -m "feat: add doctor contract and cli boundary"
 ### Task 3: Local Source/Recipe discovery and path safety
 
 **Files:**
+
 - Modify: `src/doctor.ts`
 - Modify: `test/doctor.e2e.test.ts`
 
@@ -269,7 +272,6 @@ Create direct `alpha` and `zulu` Recipe folders, nested `nested/child/recipe.yam
 - [ ] **Step 2: Run discovery tests**
 
 Run `node --test test/doctor.e2e.test.ts --test-name-pattern "first-level|provider|duplicate|symlink"`. Expected: failure because Source traversal is absent.
-
 
 - [ ] **Step 3: Add local Source resolution**
 
@@ -333,6 +335,7 @@ git commit -m "feat: discover local sources and recipes safely"
 ### Task 4: File Steps and collision semantics
 
 **Files:**
+
 - Modify: `src/doctor.ts`
 - Modify: `test/doctor.e2e.test.ts`
 
@@ -393,6 +396,7 @@ git commit -m "feat: diagnose complete file artifacts"
 ### Task 5: File Fragments, output, and final acceptance matrix
 
 **Files:**
+
 - Modify: `src/doctor.ts`
 - Modify: `src/cli.ts`
 - Modify: `test/doctor.e2e.test.ts`
