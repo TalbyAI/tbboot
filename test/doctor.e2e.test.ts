@@ -4,6 +4,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	rename,
 	rm,
 	symlink,
 	writeFile,
@@ -265,13 +266,50 @@ async function runReadOnlyCommand(
 	}
 }
 
-test("unknown arguments return 2 and print usage only on stderr", async () => {
+test("usage errors return 2 and print usage only on stderr", async () => {
 	const fixture = await createFixture();
 	try {
-		const result = await runCli(fixture, ["doctor", "--unknown"]);
-		assert.equal(result.exitCode, 2);
-		assert.equal(result.stdout, "");
-		assert.match(result.stderr, /usage: tbboot doctor/);
+		const cases = [
+			["doctor", "--unknown"],
+			["doctor", "--json", "--unknown"],
+			["--json", "doctor"],
+			["doctor", "--root"],
+			["doctor", "--root="],
+			["doctor", `--root=${fixture.consumerRoot}`],
+			[
+				"doctor",
+				"--root",
+				fixture.consumerRoot,
+				"--root",
+				fixture.consumerRoot,
+			],
+			["doctor", "unexpected"],
+		];
+		for (const args of cases) {
+			const result = await runCli(fixture, args);
+			assert.equal(result.exitCode, 2, args.join(" "));
+			assert.equal(result.stdout, "", args.join(" "));
+			assert.match(result.stderr, /usage: tbboot doctor/, args.join(" "));
+		}
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("preserves root values beginning with a dash", async () => {
+	const fixture = await createFixture();
+	try {
+		const consumerRoot = join(fixture.root, "-consumer");
+		await rename(fixture.consumerRoot, consumerRoot);
+		fixture.consumerRoot = consumerRoot;
+		const result = await runCli(
+			fixture,
+			["doctor", "--root", "-consumer", "--json"],
+			{ cwd: fixture.root },
+		);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stderr, "");
+		assert.equal(parseJsonOutput<DoctorEnvelope>(result.stdout).status, "ok");
 	} finally {
 		await fixture.cleanup();
 	}
