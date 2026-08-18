@@ -85,14 +85,20 @@ function appendFragment(target: Buffer | undefined, block: Buffer): Buffer {
 	if (target === undefined || target.length === 0) {
 		return Buffer.concat([block, Buffer.from("\n")]);
 	}
-	const text = target.toString("utf8");
+	const endsWith = (suffix: string): boolean =>
+		target.subarray(-Buffer.byteLength(suffix)).equals(Buffer.from(suffix));
 	const separator =
-		text.endsWith("\n\n") || text.endsWith("\r\n\r\n")
+		endsWith("\n\n") || endsWith("\r\n\r\n")
 			? ""
-			: text.endsWith("\n") || text.endsWith("\r\n")
+			: endsWith("\n") || endsWith("\r\n")
 				? "\n"
 				: "\n\n";
-	return Buffer.from(`${text}${separator}${block.toString("utf8")}\n`);
+	return Buffer.concat([
+		target,
+		Buffer.from(separator),
+		block,
+		Buffer.from("\n"),
+	]);
 }
 
 function replaceFragment(
@@ -100,15 +106,16 @@ function replaceFragment(
 	block: Buffer,
 	marker: string,
 ): Buffer {
-	const text = target.toString("utf8");
-	const start = `<!-- managed-by: ${marker} -->`;
-	const end = `<!-- end-managed-by: ${marker} -->`;
-	const startAt = text.indexOf(start);
-	const endAt = text.indexOf(end, startAt + start.length);
+	const start = Buffer.from(`<!-- managed-by: ${marker} -->`);
+	const end = Buffer.from(`<!-- end-managed-by: ${marker} -->`);
+	const startAt = target.indexOf(start);
+	const endAt = target.indexOf(end, startAt + start.length);
 	if (startAt < 0 || endAt < 0) return target;
-	return Buffer.from(
-		`${text.slice(0, startAt)}${block.toString("utf8")}${text.slice(endAt + end.length)}`,
-	);
+	return Buffer.concat([
+		target.subarray(0, startAt),
+		block,
+		target.subarray(endAt + end.length),
+	]);
 }
 
 function stateKey(
@@ -183,7 +190,7 @@ function effectFor(
 	if (artifact.type === "file") {
 		return {
 			source,
-			sourceFingerprint: sha256(artifact.sourceFingerprint),
+			sourceFingerprint: sha256(artifact.sourceInput),
 			recipe: artifact.recipe,
 			step: artifact.step,
 			type: "file",
@@ -195,7 +202,7 @@ function effectFor(
 	}
 	return {
 		source,
-		sourceFingerprint: sha256(artifact.sourceFingerprint),
+		sourceFingerprint: sha256(artifact.sourceInput),
 		recipe: artifact.recipe,
 		step: artifact.step,
 		type: "file-fragment",
@@ -334,7 +341,6 @@ export async function runInstall(
 						effects: [...effects.values()],
 					})) || envelope.changed;
 			}
-			artifact.action.state = "satisfied";
 		} catch (error) {
 			addDiagnostic(
 				envelope.diagnostics,
@@ -348,6 +354,25 @@ export async function runInstall(
 				artifact.optional ? "warning" : "error",
 			);
 			if (!artifact.optional) break;
+		}
+	}
+	if (
+		plan.artifacts.some(
+			({ action }) => action.state !== "drift" || options.force,
+		)
+	) {
+		try {
+			envelope.changed =
+				(await persistState(plan.consumerRoot, {
+					schemaVersion: 1,
+					effects: [...effects.values()],
+				})) || envelope.changed;
+		} catch (error) {
+			addDiagnostic(
+				envelope.diagnostics,
+				"install-write",
+				`Unable to persist Installation record: ${errorMessage(error)}`,
+			);
 		}
 	}
 	return finish(envelope);

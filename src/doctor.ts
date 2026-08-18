@@ -42,7 +42,7 @@ export type ArtifactAction = {
 export type PlannedArtifact = {
 	source: SourceReference;
 	sourceRoot: string;
-	sourceFingerprint: Buffer;
+	sourceInput: Buffer;
 	recipe: string;
 	step: number;
 	type: ArtifactType;
@@ -534,6 +534,9 @@ function fragmentState(
 	const ends = exactMarkerLines(text, end, false);
 
 	const managed = new Map<string, { starts: number; ends: number }>();
+	const markerStack: string[] = [];
+	let nestedMarker = false;
+	let mismatchedMarker = false;
 	for (const line of lines) {
 		const startMatch = /^<!-- managed-by: (.+) -->$/.exec(line);
 		const endMatch = /^<!-- end-managed-by: (.+) -->$/.exec(line);
@@ -544,6 +547,12 @@ function fragmentState(
 			if (startMatch) entry.starts += 1;
 			else entry.ends += 1;
 			managed.set(name, entry);
+			if (startMatch) {
+				if (markerStack.length > 0) nestedMarker = true;
+				markerStack.push(name);
+			} else if (markerStack.pop() !== name) {
+				mismatchedMarker = true;
+			}
 		}
 	}
 	const malformedMarkerLine = lines.some((line, index) => {
@@ -570,6 +579,9 @@ function fragmentState(
 	if (
 		malformedMarkerLine ||
 		hasUnmatchedDistinctMarker ||
+		nestedMarker ||
+		mismatchedMarker ||
+		markerStack.length > 0 ||
 		(starts.length === 1) !== (ends.length === 1)
 	) {
 		return { state: "conflict", code: "incomplete-fragment" };
@@ -863,7 +875,7 @@ export async function planLocalInstall(
 			{
 				source: descriptor.sourceReference,
 				sourceRoot: descriptor.source,
-				sourceFingerprint: input,
+				sourceInput: input,
 				recipe: descriptor.recipe,
 				step: descriptor.step,
 				type: descriptor.type,

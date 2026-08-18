@@ -1109,6 +1109,25 @@ test("install creates a File and records ownership", async () => {
 			),
 			"/keep\n/state.yaml\n",
 		);
+		await rm(join(fixture.consumerRoot, ".tbboot", ".gitignore"));
+		const metadataRepair = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(metadataRepair.exitCode, 0);
+		assert.equal(
+			parseJsonOutput<{ changed: boolean }>(metadataRepair.stdout).changed,
+			true,
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", ".gitignore"),
+				"utf8",
+			),
+			"/state.yaml\n",
+		);
 		const beforeSecond = await snapshotTree(
 			fixture.consumerRoot,
 			fixture.profileRoot,
@@ -1329,6 +1348,73 @@ test("force does not bypass structural File and Fragment conflicts", async () =>
 				"utf8",
 			),
 			"hello\n",
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("force rejects nested Managed blocks and preserves non-UTF8 unrelated bytes", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "outer", [
+			{
+				type: "file-fragment",
+				input: "files/outer.txt",
+				inputContent: "outer\n",
+				target: "AGENTS.md",
+			},
+		]);
+		await writeRecipe(fixture.sourceRoot, "inner", [
+			{
+				type: "file-fragment",
+				input: "files/inner.txt",
+				inputContent: "inner\n",
+				target: "AGENTS.md",
+			},
+		]);
+		const target = join(fixture.consumerRoot, "AGENTS.md");
+		const nested = Buffer.from(
+			[
+				"<!-- managed-by: source/outer -->",
+				"outer",
+				"<!-- managed-by: source/inner -->",
+				"inner",
+				"<!-- end-managed-by: source/inner -->",
+				"<!-- end-managed-by: source/outer -->",
+				"",
+			].join("\n"),
+		);
+		await writeFile(target, nested);
+		const blocked = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(blocked.exitCode, 1);
+		assert.deepEqual(await readFile(target), nested);
+
+		await writeFile(target, Buffer.from([0xff, 0xfe, 0x0a]));
+		await rm(join(fixture.sourceRoot, "inner"), { recursive: true });
+		await rm(join(fixture.sourceRoot, "outer"), { recursive: true });
+		await writeRecipe(fixture.sourceRoot, "bytes", [
+			{
+				type: "file-fragment",
+				input: "files/block.txt",
+				inputContent: "bytes\n",
+				target: "AGENTS.md",
+			},
+		]);
+		const appended = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(appended.exitCode, 0);
+		assert.deepEqual(
+			(await readFile(target)).subarray(0, 3),
+			Buffer.from([0xff, 0xfe, 0x0a]),
 		);
 	} finally {
 		await fixture.cleanup();

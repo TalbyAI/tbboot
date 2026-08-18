@@ -40,7 +40,7 @@
 export type PlannedArtifact = {
   source: SourceReference;
   sourceRoot: string;
-  sourceFingerprint: Buffer;
+  sourceInput: Buffer;
   recipe: string;
   step: number;
   type: "file" | "file-fragment";
