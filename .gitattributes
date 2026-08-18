@@ -1,1 +1,2 @@
 *.ts text eol=lf
+prototypes/issue-12/fixture/source/baseline/files/hello.txt text eol=lf

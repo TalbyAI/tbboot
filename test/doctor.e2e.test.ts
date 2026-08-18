@@ -12,11 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-	parseJsonOutput,
-	runCommand,
-} from "../prototypes/issue-12/harness.mjs";
 import type { DoctorEnvelope } from "../src/doctor.ts";
+import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliPath = join(projectRoot, "src", "cli.ts");
