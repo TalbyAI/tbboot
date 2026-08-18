@@ -119,6 +119,10 @@ export function runCommand({
 		child.on("close", (exitCode) => {
 			if (timedOut) {
 				finish(() => reject(timeoutError));
+			} else if (!readySeen) {
+				finish(() =>
+					reject(new Error("command exited before the readiness marker")),
+				);
 			} else {
 				finish(() =>
 					resolve({ exitCode: childExitCode ?? exitCode, stdout, stderr }),

@@ -43,6 +43,13 @@ test("starts the command timeout after the readiness marker", async () => {
 	assert.equal(result.exitCode, 0);
 });
 
+test("rejects a clean exit before the readiness marker", async () => {
+	await assert.rejects(
+		runCommand({ file: process.execPath, args: ["-e", ""], ready: "READY" }),
+		/exited before the readiness marker/,
+	);
+});
+
 test("rejects when the readiness marker misses its timeout", async () => {
 	await assert.rejects(
 		runCommand({
