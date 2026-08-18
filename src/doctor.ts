@@ -501,22 +501,56 @@ function normalizeNewlines(value: string): string {
 	return value.replace(/\r\n?/g, "\n");
 }
 
-function exactMarkerLines(
-	text: string,
-	token: string,
-	startMarker: boolean,
+type ManagedBlockScan = {
+	starts: number[];
+	ends: number[];
+	range?: { start: number; end: number };
+};
+
+function exactMarkerOffsets(
+	bytes: Buffer,
+	token: Buffer,
+	requireTerminator: boolean,
 ): number[] {
 	const positions: number[] = [];
-	let offset = 0;
-	while (offset <= text.length) {
-		const lineEnd = text.indexOf("\n", offset);
-		const end = lineEnd === -1 ? text.length : lineEnd;
-		if (text.slice(offset, end) === token && (!startMarker || lineEnd !== -1))
-			positions.push(offset);
-		if (lineEnd === -1) break;
-		offset = lineEnd + 1;
+	let lineStart = 0;
+	while (lineStart <= bytes.length) {
+		let lineEnd = lineStart;
+		while (
+			lineEnd < bytes.length &&
+			bytes[lineEnd] !== 0x0a &&
+			bytes[lineEnd] !== 0x0d
+		)
+			lineEnd += 1;
+		const hasTerminator = lineEnd < bytes.length;
+		if (
+			bytes.subarray(lineStart, lineEnd).equals(token) &&
+			(!requireTerminator || hasTerminator)
+		)
+			positions.push(lineStart);
+		if (!hasTerminator) break;
+		lineStart = lineEnd + 1;
+		if (bytes[lineEnd] === 0x0d && bytes[lineStart] === 0x0a) lineStart += 1;
 	}
 	return positions;
+}
+
+export function scanManagedBlock(
+	bytes: Buffer,
+	marker: string,
+): ManagedBlockScan {
+	const start = Buffer.from(`<!-- managed-by: ${marker} -->`);
+	const end = Buffer.from(`<!-- end-managed-by: ${marker} -->`);
+	const starts = exactMarkerOffsets(bytes, start, true);
+	const ends = exactMarkerOffsets(bytes, end, false);
+	return {
+		starts,
+		ends,
+		range:
+			starts.length === 1 && ends.length === 1 && ends[0] > starts[0]
+				? { start: starts[0], end: ends[0] + end.length }
+				: undefined,
+	};
 }
 
 function fragmentState(
@@ -530,8 +564,10 @@ function fragmentState(
 	const start = `<!-- managed-by: ${marker} -->`;
 	const end = `<!-- end-managed-by: ${marker} -->`;
 	const expected = `${start}\n${body}${body.endsWith("\n") ? "" : "\n"}${end}`;
-	const starts = exactMarkerLines(text, start, true);
-	const ends = exactMarkerLines(text, end, false);
+	const targetBytes = Buffer.from(text);
+	const markerScan = scanManagedBlock(targetBytes, marker);
+	const starts = markerScan.starts;
+	const ends = markerScan.ends;
 
 	const managed = new Map<string, { starts: number; ends: number }>();
 	const markerStack: string[] = [];
@@ -589,11 +625,10 @@ function fragmentState(
 	if (starts.length === 0)
 		return { state: "missing", code: "fragment-missing" };
 
-	const startOffset = starts[0];
-	const endOffset = ends[0];
-	if (endOffset <= startOffset)
+	const range = markerScan.range;
+	if (range === undefined)
 		return { state: "conflict", code: "incomplete-fragment" };
-	const actual = text.slice(startOffset, endOffset + end.length);
+	const actual = targetBytes.subarray(range.start, range.end).toString("utf8");
 	return actual === expected
 		? { state: "satisfied" }
 		: { state: "drift", code: "fragment-drift" };

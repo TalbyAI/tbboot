@@ -9,6 +9,7 @@ import {
 	type LocalInstallPlan,
 	type PlannedArtifact,
 	planLocalInstall,
+	scanManagedBlock,
 } from "./doctor.ts";
 
 export type InstallEnvelope = {
@@ -106,15 +107,12 @@ function replaceFragment(
 	block: Buffer,
 	marker: string,
 ): Buffer {
-	const start = Buffer.from(`<!-- managed-by: ${marker} -->`);
-	const end = Buffer.from(`<!-- end-managed-by: ${marker} -->`);
-	const startAt = target.indexOf(start);
-	const endAt = target.indexOf(end, startAt + start.length);
-	if (startAt < 0 || endAt < 0) return target;
+	const range = scanManagedBlock(target, marker).range;
+	if (range === undefined) return target;
 	return Buffer.concat([
-		target.subarray(0, startAt),
+		target.subarray(0, range.start),
 		block,
-		target.subarray(endAt + end.length),
+		target.subarray(range.end),
 	]);
 }
 

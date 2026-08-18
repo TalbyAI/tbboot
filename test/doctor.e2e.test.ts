@@ -1247,6 +1247,52 @@ test("install creates distinct Managed blocks and force preserves unrelated cont
 	}
 });
 
+test("force replaces the valid Managed block after inline marker text", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "fragment", [
+			{
+				type: "file-fragment",
+				input: "files/fragment.txt",
+				inputContent: "new\n",
+				target: "AGENTS.md",
+			},
+		]);
+		const target = join(fixture.consumerRoot, "AGENTS.md");
+		const marker = "source/fragment";
+		await writeFile(
+			target,
+			[
+				`unmanaged <!-- managed-by: ${marker} -->inline<!-- end-managed-by: ${marker} -->`,
+				`<!-- managed-by: ${marker} -->`,
+				"old",
+				`<!-- end-managed-by: ${marker} -->`,
+				"",
+			].join("\n"),
+		);
+
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0);
+		assert.equal(
+			await readFile(target, "utf8"),
+			[
+				`unmanaged <!-- managed-by: ${marker} -->inline<!-- end-managed-by: ${marker} -->`,
+				`<!-- managed-by: ${marker} -->`,
+				"new",
+				`<!-- end-managed-by: ${marker} -->`,
+				"",
+			].join("\n"),
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("install preflight conflicts prevent every write", async () => {
 	const fixture = await createFixture();
 	try {
