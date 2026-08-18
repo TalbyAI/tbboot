@@ -18,6 +18,12 @@ import type {
 	Step,
 } from "./contract.ts";
 import { validateDocument } from "./contract.ts";
+import {
+	errorMessage,
+	finish,
+	isNotFound,
+	normalizeNewlines,
+} from "./shared.ts";
 
 type SupportedDocumentKind = Extract<
 	DocumentKind,
@@ -42,7 +48,6 @@ export type ArtifactAction = {
 export type PlannedArtifact = {
 	source: SourceReference;
 	sourceRoot: string;
-	sourceInput: Buffer;
 	recipe: string;
 	step: number;
 	type: ArtifactType;
@@ -50,7 +55,6 @@ export type PlannedArtifact = {
 	input: Buffer;
 	targetPath: string;
 	targetBefore?: Buffer;
-	created: boolean;
 	optional: boolean;
 	action: ArtifactAction;
 };
@@ -127,34 +131,6 @@ function diagnostic(
 		...(context.recipe === undefined ? {} : { recipe: context.recipe }),
 		...(context.step === undefined ? {} : { step: context.step }),
 	};
-}
-
-function finish(envelope: DoctorEnvelope): DoctorResult {
-	const hasError = envelope.diagnostics.some(
-		({ severity }) => severity === "error",
-	);
-	const hasWarning = envelope.diagnostics.some(
-		({ severity }) => severity === "warning",
-	);
-	envelope.status = hasError ? "error" : hasWarning ? "warning" : "ok";
-	return { envelope, exitCode: hasError ? 1 : 0 };
-}
-
-function errorCode(error: unknown): string | undefined {
-	return typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		typeof error.code === "string"
-		? error.code
-		: undefined;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function isNotFound(error: unknown): boolean {
-	return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -495,10 +471,6 @@ function registerCollisions(
 			);
 		}
 	}
-}
-
-function normalizeNewlines(value: string): string {
-	return value.replace(/\r\n?/g, "\n");
 }
 
 type ManagedBlockScan = {
@@ -910,7 +882,6 @@ export async function planLocalInstall(
 			{
 				source: descriptor.sourceReference,
 				sourceRoot: descriptor.source,
-				sourceInput: input,
 				recipe: descriptor.recipe,
 				step: descriptor.step,
 				type: descriptor.type,
@@ -918,7 +889,6 @@ export async function planLocalInstall(
 				input,
 				targetPath,
 				targetBefore: descriptor.targetBefore,
-				created: descriptor.targetBefore === undefined,
 				optional: descriptor.optional,
 				action: descriptor.action,
 			},
