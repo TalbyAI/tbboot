@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 import type { DoctorEnvelope } from "../src/doctor.ts";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
@@ -108,6 +109,24 @@ async function runCli(
 	return runReadOnlyCommand(fixture, {
 		...commandFor(bin, args),
 		cwd: projectRoot,
+		...options,
+	});
+}
+
+async function runWritableCli(
+	fixture: Fixture,
+	args: string[],
+	options: RunCliOptions = {},
+): Promise<CommandResult> {
+	const bin = await installedBin();
+	return runCommand({
+		...commandFor(bin, args),
+		cwd: projectRoot,
+		env: {
+			USERPROFILE: fixture.profileRoot,
+			HOME: fixture.profileRoot,
+			...options.env,
+		},
 		...options,
 	});
 }
@@ -1013,6 +1032,304 @@ test("optional Fragment failures warn, human output is actionable, and doctor is
 		assert.equal(human.stderr, "");
 		assert.match(human.stdout, /status: warning/);
 		assert.match(human.stdout, /source-input-missing/);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install dry-run reports the complete plan and is read-only", async () => {
+	const fixture = await createFixture();
+	try {
+		await rm(join(fixture.consumerRoot, "generated", "hello.txt"));
+		const result = await runCli(fixture, [
+			"install",
+			"--dry-run",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stderr, "");
+		const envelope = parseJsonOutput<{
+			command: string;
+			changed: boolean;
+			actions: Array<{ state: string }>;
+		}>(result.stdout);
+		assert.equal(envelope.command, "install");
+		assert.equal(envelope.changed, false);
+		assert.deepEqual(
+			envelope.actions.map(({ state }) => state),
+			["missing"],
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install creates a File and records ownership", async () => {
+	const fixture = await createFixture();
+	try {
+		const target = join(fixture.consumerRoot, "generated", "hello.txt");
+		await rm(target);
+		await mkdir(join(fixture.consumerRoot, ".tbboot"));
+		await writeFile(
+			join(fixture.consumerRoot, ".tbboot", ".gitignore"),
+			"/keep\n",
+		);
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stderr, "");
+		assert.equal(await readFile(target, "utf8"), "hello\n");
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as {
+			schemaVersion: number;
+			effects: Array<Record<string, unknown>>;
+		};
+		assert.equal(state.schemaVersion, 1);
+		assert.equal(state.effects.length, 1);
+		assert.equal(state.effects[0]?.type, "file");
+		assert.equal(state.effects[0]?.created, true);
+		assert.match(
+			String(state.effects[0]?.artifactFingerprint),
+			/^[0-9a-f]{64}$/,
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", ".gitignore"),
+				"utf8",
+			),
+			"/keep\n/state.yaml\n",
+		);
+		const beforeSecond = await snapshotTree(
+			fixture.consumerRoot,
+			fixture.profileRoot,
+		);
+		const second = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(second.exitCode, 0);
+		assert.equal(
+			parseJsonOutput<{ changed: boolean }>(second.stdout).changed,
+			false,
+		);
+		assert.deepEqual(
+			await snapshotTree(fixture.consumerRoot, fixture.profileRoot),
+			beforeSecond,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install blocks drift and force reconciles only the File", async () => {
+	const fixture = await createFixture();
+	try {
+		const target = join(fixture.consumerRoot, "generated", "hello.txt");
+		await rm(target);
+		assert.equal(
+			(
+				await runWritableCli(fixture, [
+					"install",
+					"--root",
+					fixture.consumerRoot,
+				])
+			).exitCode,
+			0,
+		);
+		await writeFile(target, "local change\n");
+		const blocked = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(blocked.exitCode, 1);
+		assert.equal(await readFile(target, "utf8"), "local change\n");
+		const forced = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(forced.exitCode, 0);
+		assert.equal(await readFile(target, "utf8"), "hello\n");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install creates distinct Managed blocks and force preserves unrelated content", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "first", [
+			{
+				type: "file-fragment",
+				input: "files/first.txt",
+				inputContent: "first\r\nline",
+				target: "AGENTS.md",
+			},
+		]);
+		await writeRecipe(fixture.sourceRoot, "second", [
+			{
+				type: "file-fragment",
+				input: "files/second.txt",
+				inputContent: "second\n",
+				target: "AGENTS.md",
+			},
+		]);
+		const target = join(fixture.consumerRoot, "AGENTS.md");
+		await writeFile(target, "unmanaged\n");
+		const first = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(first.exitCode, 0);
+		const installed = await readFile(target, "utf8");
+		assert.match(installed, /unmanaged/);
+		assert.match(installed, /managed-by: source\/first/);
+		assert.match(installed, /managed-by: source\/second/);
+		await writeFile(
+			target,
+			installed.replace("first\nline", "changed locally"),
+		);
+		const blocked = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(blocked.exitCode, 1);
+		const forced = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(forced.exitCode, 0);
+		const reconciled = await readFile(target, "utf8");
+		assert.match(reconciled, /unmanaged/);
+		assert.match(reconciled, /first\nline/);
+		assert.match(reconciled, /managed-by: source\/second/);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install preflight conflicts prevent every write", async () => {
+	const fixture = await createFixture();
+	try {
+		await rm(join(fixture.consumerRoot, "generated", "hello.txt"));
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../source",
+				"  - provider: local",
+				"    locator:",
+				"      path: ./../source",
+				"",
+			].join("\n"),
+		);
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 1);
+		assert.equal(
+			await readFile(join(fixture.consumerRoot, "tbboot.yaml"), "utf8"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../source",
+				"  - provider: local",
+				"    locator:",
+				"      path: ./../source",
+				"",
+			].join("\n"),
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "hello.txt"),
+			).catch(() => undefined),
+			undefined,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("invalid Installation record blocks install before Artifact writes", async () => {
+	const fixture = await createFixture();
+	try {
+		const target = join(fixture.consumerRoot, "generated", "hello.txt");
+		await rm(target);
+		await mkdir(join(fixture.consumerRoot, ".tbboot"));
+		await writeFile(
+			join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+			"schemaVersion: 2\neffects: []\n",
+		);
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 1);
+		assert.equal(await readFile(target).catch(() => undefined), undefined);
+		assert.equal(
+			await readFile(join(fixture.consumerRoot, ".tbboot", ".gitignore")).catch(
+				() => undefined,
+			),
+			undefined,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("force does not bypass structural File and Fragment conflicts", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "conflict", [
+			{
+				type: "file-fragment",
+				input: "files/block.txt",
+				inputContent: "conflict\n",
+				target: "generated/hello.txt",
+			},
+		]);
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 1);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "hello.txt"),
+				"utf8",
+			),
+			"hello\n",
+		);
 	} finally {
 		await fixture.cleanup();
 	}

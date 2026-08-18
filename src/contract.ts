@@ -64,13 +64,40 @@ export type RecipeDocument = {
 	requires?: Array<{ source: string; recipe: string }>;
 };
 
+export type FileStateEffect = {
+	source: SourceReference;
+	revision?: string;
+	sourceFingerprint: string;
+	recipe: string;
+	step: number;
+	type: "file";
+	target: string;
+	artifactFingerprint: string;
+	created: boolean;
+};
+
+export type FileFragmentStateEffect = {
+	source: SourceReference;
+	revision?: string;
+	sourceFingerprint: string;
+	recipe: string;
+	step: number;
+	type: "file-fragment";
+	target: string;
+	marker: string;
+	artifactFingerprint: string;
+};
+
+export type StateEffect = FileStateEffect | FileFragmentStateEffect;
+export type StateDocument = { schemaVersion: 1; effects: StateEffect[] };
+
 export type DocumentByKind = {
 	manifest: ManifestDocument;
 	source: SourceDocument;
 	recipe: RecipeDocument;
 	catalog: Record<string, unknown>;
 	lockfile: Record<string, unknown>;
-	state: Record<string, unknown>;
+	state: StateDocument;
 	trust: Record<string, unknown>;
 };
 

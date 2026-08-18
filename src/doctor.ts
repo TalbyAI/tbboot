@@ -39,6 +39,29 @@ export type ArtifactAction = {
 	state: ArtifactState;
 };
 
+export type PlannedArtifact = {
+	source: SourceReference;
+	sourceRoot: string;
+	sourceFingerprint: Buffer;
+	recipe: string;
+	step: number;
+	type: ArtifactType;
+	marker?: string;
+	input: Buffer;
+	targetPath: string;
+	targetBefore?: Buffer;
+	created: boolean;
+	optional: boolean;
+	action: ArtifactAction;
+};
+
+export type LocalInstallPlan = {
+	consumerRoot: string;
+	actions: ArtifactAction[];
+	diagnostics: Diagnostic[];
+	artifacts: PlannedArtifact[];
+};
+
 export type DoctorEnvelope = {
 	schemaVersion: 1;
 	command: "doctor";
@@ -60,6 +83,7 @@ type PathResolution =
 	| { error: unknown };
 
 type StepDescriptor = {
+	sourceReference: SourceReference;
 	source: string;
 	recipe: string;
 	step: number;
@@ -72,6 +96,8 @@ type StepDescriptor = {
 	targetPath?: PathResolution;
 	marker?: string;
 	collision?: boolean;
+	inputBytes?: Buffer;
+	targetBefore?: Buffer;
 	action: ArtifactAction;
 };
 
@@ -281,6 +307,7 @@ async function resolveLocalSource(
 
 async function collectSourceSteps(
 	sourceRoot: string,
+	sourceReference: SourceReference,
 	descriptors: StepDescriptor[],
 	envelope: DoctorEnvelope,
 ): Promise<void> {
@@ -377,6 +404,7 @@ async function collectSourceSteps(
 			}
 
 			const descriptor: StepDescriptor = {
+				sourceReference,
 				source: sourceRoot,
 				recipe,
 				step: stepNumber,
@@ -562,6 +590,8 @@ function fragmentState(
 async function evaluateDescriptor(
 	descriptor: StepDescriptor,
 	envelope: DoctorEnvelope,
+	mode: "doctor" | "install",
+	force: boolean,
 ): Promise<void> {
 	if (descriptor.collision) return;
 
@@ -601,6 +631,7 @@ async function evaluateDescriptor(
 		);
 		return;
 	}
+	descriptor.inputBytes = input;
 
 	if (isPathEscape(descriptor.targetPath)) {
 		addStepDiagnostic(
@@ -632,13 +663,15 @@ async function evaluateDescriptor(
 	} catch (error) {
 		if (isNotFound(error)) {
 			descriptor.action.state = "missing";
-			addStepDiagnostic(
-				envelope,
-				descriptor,
-				descriptor.type === "file" ? "file-missing" : "fragment-missing",
-				"Target is missing",
-				"target",
-			);
+			if (mode === "doctor") {
+				addStepDiagnostic(
+					envelope,
+					descriptor,
+					descriptor.type === "file" ? "file-missing" : "fragment-missing",
+					"Target is missing",
+					"target",
+				);
+			}
 			return;
 		}
 		descriptor.action.state = "conflict";
@@ -651,12 +684,13 @@ async function evaluateDescriptor(
 		);
 		return;
 	}
+	descriptor.targetBefore = target;
 
 	if (descriptor.type === "file") {
 		descriptor.action.state = Buffer.from(input).equals(target)
 			? "satisfied"
 			: "drift";
-		if (descriptor.action.state === "drift") {
+		if (descriptor.action.state === "drift" && !(mode === "install" && force)) {
 			addStepDiagnostic(
 				envelope,
 				descriptor,
@@ -674,7 +708,12 @@ async function evaluateDescriptor(
 		descriptor.marker as string,
 	);
 	descriptor.action.state = result.state;
-	if (result.code !== undefined) {
+	const reportFragmentState =
+		result.code !== undefined &&
+		(mode === "doctor" ||
+			(result.code !== "fragment-missing" &&
+				!(force && result.code === "fragment-drift")));
+	if (reportFragmentState) {
 		addStepDiagnostic(
 			envelope,
 			descriptor,
@@ -693,7 +732,17 @@ async function evaluateDescriptor(
 	}
 }
 
-export async function runDoctor(root: string): Promise<DoctorResult> {
+type BuiltLocalPlan = {
+	envelope: DoctorEnvelope;
+	descriptors: StepDescriptor[];
+	consumerRoot?: string;
+};
+
+async function buildLocalPlan(
+	root: string,
+	mode: "doctor" | "install",
+	force: boolean,
+): Promise<BuiltLocalPlan> {
 	const envelope: DoctorEnvelope = {
 		schemaVersion: 1,
 		command: "doctor",
@@ -703,11 +752,13 @@ export async function runDoctor(root: string): Promise<DoctorResult> {
 		diagnostics: [],
 		consumerRoot: undefined,
 	};
+	let consumerRoot: string | undefined;
 
 	let manifestText: string;
 	try {
 		manifestText = await readFile(join(root, documentPaths.manifest), "utf8");
-		envelope.consumerRoot = await realpath(root);
+		consumerRoot = await realpath(root);
+		envelope.consumerRoot = consumerRoot;
 	} catch (error) {
 		envelope.diagnostics.push(
 			diagnostic(
@@ -717,7 +768,7 @@ export async function runDoctor(root: string): Promise<DoctorResult> {
 			),
 		);
 		delete envelope.consumerRoot;
-		return finish(envelope);
+		return { envelope, descriptors: [] };
 	}
 
 	const result = validateDocument<"manifest">({
@@ -728,7 +779,7 @@ export async function runDoctor(root: string): Promise<DoctorResult> {
 	envelope.diagnostics.push(...result.diagnostics);
 	if (result.value === undefined) {
 		delete envelope.consumerRoot;
-		return finish(envelope);
+		return { envelope, descriptors: [] };
 	}
 
 	const manifest: ManifestDocument = result.value;
@@ -773,14 +824,70 @@ export async function runDoctor(root: string): Promise<DoctorResult> {
 			continue;
 		}
 		seenSources.set(key, index);
-		await collectSourceSteps(sourceRoot, descriptors, envelope);
+		await collectSourceSteps(
+			sourceRoot,
+			sourceReference,
+			descriptors,
+			envelope,
+		);
 	}
 
 	registerCollisions(descriptors, envelope);
 	for (const descriptor of descriptors) {
 		envelope.actions.push(descriptor.action);
-		await evaluateDescriptor(descriptor, envelope);
+		await evaluateDescriptor(descriptor, envelope, mode, force);
 	}
-	delete envelope.consumerRoot;
-	return finish(envelope);
+	return { envelope, descriptors, consumerRoot };
+}
+
+export async function planLocalInstall(
+	root: string,
+	force: boolean,
+): Promise<LocalInstallPlan> {
+	const built = await buildLocalPlan(root, "install", force);
+	finish(built.envelope);
+	const artifacts = built.descriptors.flatMap((descriptor) => {
+		const input = descriptor.inputBytes;
+		const targetPath = resolvedPath(descriptor.targetPath);
+		if (
+			descriptor.collision ||
+			input === undefined ||
+			targetPath === undefined ||
+			!(["satisfied", "missing", "drift"] as ArtifactState[]).includes(
+				descriptor.action.state,
+			)
+		) {
+			return [];
+		}
+		return [
+			{
+				source: descriptor.sourceReference,
+				sourceRoot: descriptor.source,
+				sourceFingerprint: input,
+				recipe: descriptor.recipe,
+				step: descriptor.step,
+				type: descriptor.type,
+				marker: descriptor.marker,
+				input,
+				targetPath,
+				targetBefore: descriptor.targetBefore,
+				created: descriptor.targetBefore === undefined,
+				optional: descriptor.optional,
+				action: descriptor.action,
+			},
+		];
+	});
+	delete built.envelope.consumerRoot;
+	return {
+		consumerRoot: built.consumerRoot ?? resolve(root),
+		actions: built.envelope.actions,
+		diagnostics: built.envelope.diagnostics,
+		artifacts,
+	};
+}
+
+export async function runDoctor(root: string): Promise<DoctorResult> {
+	const built = await buildLocalPlan(root, "doctor", false);
+	delete built.envelope.consumerRoot;
+	return finish(built.envelope);
 }
