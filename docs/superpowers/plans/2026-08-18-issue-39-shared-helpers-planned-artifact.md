@@ -30,9 +30,11 @@
 ### Task 1: Añadir la regresión de forma de `PlannedArtifact`
 
 **Files:**
+
 - Modify: `test/doctor.e2e.test.ts:12-15, después de los helpers de ejecución`
 
 **Interfaces:**
+
 - Consumes: `planLocalInstall(root: string, force: boolean)` desde `src/doctor.ts`.
 - Produces: una prueba que falla con la estructura actual porque todavía existen `sourceInput` y `created`.
 
@@ -48,19 +50,19 @@ Añadir después de `createFixture` y antes de las pruebas CLI:
 
 ```ts
 test("local install plans keep only the input bytes and derive creation", async () => {
-	const fixture = await createFixture();
-	try {
-		const plan = await planLocalInstall(fixture.consumerRoot, false);
-		const artifact = plan.artifacts.find(
-			({ recipe, type }) => recipe === "baseline" && type === "file",
-		);
-		assert.ok(artifact);
-		assert.equal(artifact.input.toString(), "hello\n");
-		assert.equal("sourceInput" in artifact, false);
-		assert.equal("created" in artifact, false);
-	} finally {
-		await fixture.cleanup();
-	}
+    const fixture = await createFixture();
+    try {
+        const plan = await planLocalInstall(fixture.consumerRoot, false);
+        const artifact = plan.artifacts.find(
+            ({ recipe, type }) => recipe === "baseline" && type === "file",
+        );
+        assert.ok(artifact);
+        assert.equal(artifact.input.toString(), "hello\n");
+        assert.equal("sourceInput" in artifact, false);
+        assert.equal("created" in artifact, false);
+    } finally {
+        await fixture.cleanup();
+    }
 });
 ```
 
@@ -73,12 +75,14 @@ Expected: FAIL en la aserción `"sourceInput" in artifact` o `"created" in artif
 ### Task 2: Consolidar helpers y reducir `PlannedArtifact`
 
 **Files:**
+
 - Create: `src/shared.ts`
 - Modify: `src/contract.ts:1-3,148`
 - Modify: `src/doctor.ts:12-15,42-55,132-164,500,913-925`
 - Modify: `src/install.ts:4-8,29-74,191-203`
 
 **Interfaces:**
+
 - Consumes: los tipos actuales `Diagnostic`, `DoctorEnvelope`, `InstallEnvelope` y `PlannedArtifact`.
 - Produces: helpers importables y `PlannedArtifact` sin `sourceInput` ni `created`.
 
@@ -86,42 +90,42 @@ Expected: FAIL en la aserción `"sourceInput" in artifact` o `"created" in artif
 
 ```ts
 type FinishEnvelope = {
-	status: "ok" | "warning" | "error";
-	diagnostics: readonly { severity: "error" | "warning" }[];
+    status: "ok" | "warning" | "error";
+    diagnostics: readonly { severity: "error" | "warning" }[];
 };
 
 export function finish<T extends FinishEnvelope>(
-	envelope: T,
+    envelope: T,
 ): { envelope: T; exitCode: 0 | 1 } {
-	const hasError = envelope.diagnostics.some(
-		({ severity }) => severity === "error",
-	);
-	const hasWarning = envelope.diagnostics.some(
-		({ severity }) => severity === "warning",
-	);
-	envelope.status = hasError ? "error" : hasWarning ? "warning" : "ok";
-	return { envelope, exitCode: hasError ? 1 : 0 };
+    const hasError = envelope.diagnostics.some(
+        ({ severity }) => severity === "error",
+    );
+    const hasWarning = envelope.diagnostics.some(
+        ({ severity }) => severity === "warning",
+    );
+    envelope.status = hasError ? "error" : hasWarning ? "warning" : "ok";
+    return { envelope, exitCode: hasError ? 1 : 0 };
 }
 
 export function errorCode(error: unknown): string | undefined {
-	return typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		typeof error.code === "string"
-		? error.code
-		: undefined;
+    return typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+        ? error.code
+        : undefined;
 }
 
 export function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+    return error instanceof Error ? error.message : String(error);
 }
 
 export function isNotFound(error: unknown): boolean {
-	return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
+    return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
 }
 
 export function normalizeNewlines(value: string): string {
-	return value.replace(/\r\n?/g, "\n");
+    return value.replace(/\r\n?/g, "\n");
 }
 ```
 
@@ -146,9 +150,9 @@ En `src/install.ts`, cambiar ambas huellas de Source a `sha256(artifact.input)` 
 
 ```ts
 created:
-	existing?.type === "file" && existing.created
-		? true
-		: artifact.targetBefore === undefined,
+    existing?.type === "file" && existing.created
+        ? true
+        : artifact.targetBefore === undefined,
 ```
 
 Esto conserva la propiedad histórica `true` del estado existente y deriva el caso nuevo desde la ausencia del target antes de instalar.
@@ -172,6 +176,7 @@ Expected: Biome sin errores y código 0.
 ### Task 3: Revisar la implementación contra el Issue 39
 
 **Files:**
+
 - Review: `src/shared.ts`, `src/contract.ts`, `src/doctor.ts`, `src/install.ts`, `test/doctor.e2e.test.ts`
 - Reference: Issue 39 y `docs/adr/0005-preflight-before-installation-writes.md`, `docs/adr/0013-installation-record-is-local.md`, `docs/adr/0015-cli-supports-human-and-json-output.md`
 
@@ -196,6 +201,7 @@ Expected: solo cambian los helpers compartidos, `PlannedArtifact`, la prueba y l
 ### Task 4: Verificación final y commit
 
 **Files:**
+
 - Verify: todos los archivos del cambio.
 
 - [ ] **Step 1: Ejecutar el conjunto completo solicitado por el Issue**
