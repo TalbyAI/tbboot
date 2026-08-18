@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 import { parseAllDocuments } from "yaml";
+import { errorMessage } from "./shared.ts";
 
 const schemaId = "https://tbboot.dev/schemas/contract-v1";
 const contract = JSON.parse(
@@ -143,10 +144,6 @@ const validators: Partial<Record<DocumentKind, ValidateFunction<unknown>>> =
 
 if (Object.values(validators).some((validator) => validator === undefined)) {
 	throw new Error("The contract does not expose all document schemas");
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function isSchemaVersionRecord(value: unknown): value is SchemaVersionRecord {

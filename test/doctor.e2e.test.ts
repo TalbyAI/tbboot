@@ -15,6 +15,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { DoctorEnvelope } from "../src/doctor.ts";
+import { planLocalInstall } from "../src/doctor.ts";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -177,6 +178,22 @@ async function createFixture(): Promise<Fixture> {
 		cleanup: () => rm(root, { recursive: true, force: true }),
 	};
 }
+
+test("local install plans keep only the input bytes and derive creation", async () => {
+	const fixture = await createFixture();
+	try {
+		const plan = await planLocalInstall(fixture.consumerRoot, false);
+		const artifact = plan.artifacts.find(
+			({ recipe, type }) => recipe === "baseline" && type === "file",
+		);
+		assert.ok(artifact);
+		assert.equal(artifact.input.toString(), "hello\n");
+		assert.equal("sourceInput" in artifact, false);
+		assert.equal("created" in artifact, false);
+	} finally {
+		await fixture.cleanup();
+	}
+});
 
 async function writeRecipe(
 	sourceRoot: string,

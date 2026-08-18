@@ -11,6 +11,12 @@ import {
 	planLocalInstall,
 	scanManagedBlock,
 } from "./doctor.ts";
+import {
+	errorMessage,
+	finish,
+	isNotFound,
+	normalizeNewlines,
+} from "./shared.ts";
 
 export type InstallEnvelope = {
 	schemaVersion: 1;
@@ -26,17 +32,6 @@ export type InstallResult = {
 	exitCode: 0 | 1;
 };
 
-function finish(envelope: InstallEnvelope): InstallResult {
-	const hasError = envelope.diagnostics.some(
-		({ severity }) => severity === "error",
-	);
-	const hasWarning = envelope.diagnostics.some(
-		({ severity }) => severity === "warning",
-	);
-	envelope.status = hasError ? "error" : hasWarning ? "warning" : "ok";
-	return { envelope, exitCode: hasError ? 1 : 0 };
-}
-
 function envelopeFromPlan(plan: LocalInstallPlan): InstallEnvelope {
 	return {
 		schemaVersion: 1,
@@ -48,29 +43,8 @@ function envelopeFromPlan(plan: LocalInstallPlan): InstallEnvelope {
 	};
 }
 
-function errorCode(error: unknown): string | undefined {
-	return typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		typeof error.code === "string"
-		? error.code
-		: undefined;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function isNotFound(error: unknown): boolean {
-	return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
-}
-
 function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
-}
-
-function normalizeNewlines(value: string): string {
-	return value.replace(/\r\n?/g, "\n");
 }
 
 function fragmentBlock(input: Buffer, marker: string): Buffer {
@@ -188,19 +162,21 @@ function effectFor(
 	if (artifact.type === "file") {
 		return {
 			source,
-			sourceFingerprint: sha256(artifact.sourceInput),
+			sourceFingerprint: sha256(artifact.input),
 			recipe: artifact.recipe,
 			step: artifact.step,
 			type: "file",
 			target,
 			artifactFingerprint: sha256(content),
 			created:
-				existing?.type === "file" && existing.created ? true : artifact.created,
+				existing?.type === "file" && existing.created
+					? true
+					: artifact.targetBefore === undefined,
 		};
 	}
 	return {
 		source,
-		sourceFingerprint: sha256(artifact.sourceInput),
+		sourceFingerprint: sha256(artifact.input),
 		recipe: artifact.recipe,
 		step: artifact.step,
 		type: "file-fragment",
