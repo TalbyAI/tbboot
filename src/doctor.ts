@@ -1065,19 +1065,21 @@ async function buildLocalPlan(
 			group.references.push(normalizedReference);
 			gitGroups.set(key, group);
 		}
-		if (mode === "install" && lockMode !== "none" && gitGroups.size > 0) {
+		if (mode === "install" && lockMode !== "none") {
 			const loaded = await readLockfile(root, envelope);
-			preparedLockfile = loaded.document;
 			if (!loaded.valid) {
 				return {
 					envelope,
 					descriptors,
 					consumerRoot,
-					lockfile: preparedLockfile,
+					lockfile: loaded.document,
 					lockfileChanged: false,
 				};
 			}
-			if (lockMode === "frozen" && !loaded.exists) {
+			if (loaded.exists || gitGroups.size > 0) {
+				preparedLockfile = loaded.document;
+			}
+			if (lockMode === "frozen" && gitGroups.size > 0 && !loaded.exists) {
 				envelope.diagnostics.push(
 					diagnostic(
 						"lockfile-missing",
@@ -1089,9 +1091,43 @@ async function buildLocalPlan(
 					envelope,
 					descriptors,
 					consumerRoot,
-					lockfile: preparedLockfile,
+					lockfile: loaded.document,
 					lockfileChanged: false,
 				};
+			}
+			if (preparedLockfile !== undefined) {
+				const declared = new Set(gitGroups.keys());
+				const retained: LockEntry[] = [];
+				let pruned = false;
+				for (const [index, entry] of preparedLockfile.sources.entries()) {
+					const stale =
+						entry.source.provider === "git" &&
+						!declared.has(await lockIdentity(root, entry.source));
+					if (!stale || lockMode === "frozen") {
+						retained.push(entry);
+					}
+					if (stale) {
+						if (lockMode === "frozen" && entry.source.provider === "git") {
+							envelope.diagnostics.push(
+								lockDiagnostic(
+									"lockfile-stale",
+									"Frozen lockfile contains an undeclared Git Source entry",
+									index,
+									entry.source,
+								),
+							);
+						} else {
+							pruned = true;
+						}
+					}
+				}
+				if (pruned) {
+					preparedLockfile = {
+						schemaVersion: 1,
+						sources: retained,
+					};
+					lockfileChanged = true;
+				}
 			}
 		}
 
@@ -1317,7 +1353,10 @@ async function buildLocalPlan(
 			lockfileChanged,
 		};
 	} finally {
-		for (const cleanup of cleanups.reverse()) await cleanup();
+		// ponytail: cleanup failures stay best-effort; aggregate diagnostics if reporting becomes necessary.
+		for (const cleanup of [...cleanups].reverse()) {
+			await cleanup().catch(() => undefined);
+		}
 	}
 }
 

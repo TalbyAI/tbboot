@@ -646,6 +646,56 @@ test("Git lockfile and artifacts stay untouched when another source fails prefli
 	}
 });
 
+test("update-lock removes Git entries no longer declared", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"      path: nested/source",
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		const initial = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(initial.exitCode, 0, `${initial.stdout}\n${initial.stderr}`);
+		await configureGitConsumer(fixture, gitFixture, "v1");
+		const update = await runWritableCli(fixture, [
+			"install",
+			"--update-lock",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(update.exitCode, 0, `${update.stdout}\n${update.stderr}`);
+		const lock = parseYaml(
+			await readFile(join(fixture.consumerRoot, "tbboot.lock.yaml"), "utf8"),
+		) as { sources: Array<{ source: { locator: { path?: string } } }> };
+		assert.equal(lock.sources.length, 1);
+		assert.equal(lock.sources[0]?.source.locator.path, undefined);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
 test("stale Git lockfiles require update and frozen mode blocks missing entries", async () => {
 	const fixture = await createFixture();
 	const gitFixture = await createGitFixture();
