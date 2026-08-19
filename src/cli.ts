@@ -11,7 +11,7 @@ import { runInstall } from "./install.ts";
 
 const usage = [
 	"usage: tbboot doctor [--root <consumer-root>] [--json]",
-	"usage: tbboot install [--root <consumer-root>] [--dry-run] [--force] [--json]",
+	"usage: tbboot install [--root <consumer-root>] [--dry-run] [--force] [--update-lock|--frozen-lockfile] [--json]",
 ].join("\n");
 
 type ParseResult =
@@ -23,7 +23,14 @@ type ParseResult =
 	| {
 			ok: true;
 			command: "install";
-			options: { root: string; json: boolean; dryRun: boolean; force: boolean };
+			options: {
+				root: string;
+				json: boolean;
+				dryRun: boolean;
+				force: boolean;
+				updateLock: boolean;
+				frozenLockfile: boolean;
+			};
 	  }
 	| { ok: false; message: string };
 
@@ -55,6 +62,8 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 						json: { type: "boolean" },
 						"dry-run": { type: "boolean" },
 						force: { type: "boolean" },
+						"update-lock": { type: "boolean" },
+						"frozen-lockfile": { type: "boolean" },
 					};
 		const { values, tokens = [] } = parseArgs({
 			args,
@@ -79,6 +88,35 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 		) {
 			return { ok: false, message: "--force may only be specified once" };
 		}
+		if (
+			command === "install" &&
+			tokens.filter(
+				(token) => token.kind === "option" && token.name === "update-lock",
+			).length > 1
+		) {
+			return { ok: false, message: "--update-lock may only be specified once" };
+		}
+		if (
+			command === "install" &&
+			tokens.filter(
+				(token) => token.kind === "option" && token.name === "frozen-lockfile",
+			).length > 1
+		) {
+			return {
+				ok: false,
+				message: "--frozen-lockfile may only be specified once",
+			};
+		}
+		if (
+			command === "install" &&
+			values["update-lock"] === true &&
+			values["frozen-lockfile"] === true
+		) {
+			return {
+				ok: false,
+				message: "--update-lock and --frozen-lockfile cannot be used together",
+			};
+		}
 		const root = resolve(cwd, (values.root as string | undefined) ?? ".");
 		const json = (values.json as boolean | undefined) ?? false;
 		if (command === "doctor") {
@@ -92,6 +130,9 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 				json,
 				dryRun: (values["dry-run"] as boolean | undefined) ?? false,
 				force: (values.force as boolean | undefined) ?? false,
+				updateLock: (values["update-lock"] as boolean | undefined) ?? false,
+				frozenLockfile:
+					(values["frozen-lockfile"] as boolean | undefined) ?? false,
 			},
 		};
 	} catch (error) {
@@ -142,6 +183,8 @@ export async function main(
 			: await runInstall(command.options.root, {
 					dryRun: command.options.dryRun,
 					force: command.options.force,
+					updateLock: command.options.updateLock,
+					frozenLockfile: command.options.frozenLockfile,
 				});
 	process.stdout.write(
 		command.options.json

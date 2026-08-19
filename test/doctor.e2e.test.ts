@@ -12,10 +12,15 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { DoctorEnvelope } from "../src/doctor.ts";
 import { planLocalInstall } from "../src/doctor.ts";
+import {
+	GitSourceError,
+	materializeGitSource,
+	resolveGitSelector,
+} from "../src/git.ts";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -48,6 +53,18 @@ type SnapshotEntry =
 type CommandOptions = Parameters<typeof runCommand>[0];
 type CommandResult = Awaited<ReturnType<typeof runCommand>>;
 type RunCliOptions = Omit<CommandOptions, "file" | "args">;
+
+type GitFixture = {
+	repo: string;
+	revisions: {
+		base: string;
+		x: string;
+		y: string;
+		upperA: string;
+		upperB: string;
+	};
+	cleanup: () => Promise<void>;
+};
 
 function errorCode(error: unknown): string | undefined {
 	return typeof error === "object" &&
@@ -179,6 +196,80 @@ async function createFixture(): Promise<Fixture> {
 	};
 }
 
+async function git(repo: string, args: string[]): Promise<string> {
+	const result = await runCommand({
+		...commandFor("git", args),
+		cwd: repo,
+	});
+	assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+	return result.stdout.trim();
+}
+
+async function commitGitFiles(
+	repo: string,
+	files: Record<string, string>,
+	message: string,
+): Promise<string> {
+	for (const [path, content] of Object.entries(files)) {
+		const file = join(repo, path);
+		await mkdir(dirname(file), { recursive: true });
+		await writeFile(file, content);
+	}
+	await git(repo, ["add", "--all"]);
+	await git(repo, ["commit", "--quiet", "-m", message]);
+	return git(repo, ["rev-parse", "HEAD"]);
+}
+
+async function createGitFixture(): Promise<GitFixture> {
+	const repo = await mkdtemp(join(tmpdir(), "tbboot-git-"));
+	try {
+		await git(repo, ["init", "--quiet", "--initial-branch=main"]);
+		await git(repo, ["config", "user.name", "tbboot fixture"]);
+		await git(repo, ["config", "user.email", "fixture@example.test"]);
+		const base = await commitGitFiles(
+			repo,
+			{
+				"source.yaml": "schemaVersion: 1\n",
+				"baseline/recipe.yaml":
+					"schemaVersion: 1\nsteps:\n  - type: file\n    input: input.txt\n    target: generated.txt\n",
+				"baseline/input.txt": "base\n",
+				"nested/source/source.yaml": "schemaVersion: 1\n",
+				"nested/source/baseline/recipe.yaml":
+					"schemaVersion: 1\nsteps:\n  - type: file\n    input: input.txt\n    target: nested.txt\n",
+				"nested/source/baseline/input.txt": "nested\n",
+			},
+			"base",
+		);
+		await git(repo, ["tag", "v1", base]);
+		await git(repo, ["branch", "line-x"]);
+		await git(repo, ["checkout", "--quiet", "line-x"]);
+		const x = await commitGitFiles(repo, { "x.txt": "x\n" }, "x");
+		await git(repo, ["tag", "v2", x]);
+		await git(repo, ["tag", "same", x]);
+		await git(repo, ["checkout", "--quiet", "main"]);
+		await git(repo, ["branch", "line-y"]);
+		await git(repo, ["checkout", "--quiet", "line-y"]);
+		const y = await commitGitFiles(repo, { "y.txt": "y\n" }, "y");
+		await git(repo, ["branch", "same", y]);
+		await git(repo, ["checkout", "--quiet", "line-x"]);
+		await git(repo, ["merge", "--quiet", "--no-ff", "--no-edit", "line-y"]);
+		const upperA = await git(repo, ["rev-parse", "HEAD"]);
+		await git(repo, ["tag", "range-a", upperA]);
+		await git(repo, ["checkout", "--quiet", "line-y"]);
+		await git(repo, ["merge", "--quiet", "--no-ff", "--no-edit", x]);
+		const upperB = await git(repo, ["rev-parse", "HEAD"]);
+		await git(repo, ["tag", "range-b", upperB]);
+		return {
+			repo,
+			revisions: { base, x, y, upperA, upperB },
+			cleanup: () => rm(repo, { recursive: true, force: true }),
+		};
+	} catch (error) {
+		await rm(repo, { recursive: true, force: true });
+		throw error;
+	}
+}
+
 test("local install plans keep only the input bytes and derive creation", async () => {
 	const fixture = await createFixture();
 	try {
@@ -191,6 +282,561 @@ test("local install plans keep only the input bytes and derive creation", async 
 		assert.equal("sourceInput" in artifact, false);
 		assert.equal("created" in artifact, false);
 	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("Git selector provider resolves refs, ranges, and intersections", async () => {
+	const fixture = await createGitFixture();
+	try {
+		assert.equal(
+			(await resolveGitSelector(fixture.repo, [{ ref: "v1" }])).revision,
+			fixture.revisions.base,
+		);
+		assert.equal(
+			(await resolveGitSelector(fixture.repo, [{ ref: "refs/tags/v2" }]))
+				.revision,
+			fixture.revisions.x,
+		);
+		assert.equal(
+			(
+				await resolveGitSelector(pathToFileURL(fixture.repo).href, [
+					{ ref: "refs/heads/line-x" },
+				])
+			).revision,
+			fixture.revisions.upperA,
+		);
+		assert.equal(
+			(await resolveGitSelector(fixture.repo, [{ from: "v1", to: "v2" }]))
+				.revision,
+			fixture.revisions.x,
+		);
+		assert.equal(
+			(await resolveGitSelector(fixture.repo, [{ from: "v2", to: "v2" }]))
+				.revision,
+			fixture.revisions.x,
+		);
+		assert.equal(
+			(
+				await resolveGitSelector(fixture.repo, [
+					{ ref: "v2" },
+					{ ref: "refs/tags/same" },
+				])
+			).revision,
+			fixture.revisions.x,
+		);
+		await assert.rejects(
+			() => resolveGitSelector(fixture.repo, [{ ref: "missing" }]),
+			(error) =>
+				error instanceof GitSourceError && error.code === "git-ref-not-found",
+		);
+		await assert.rejects(
+			() =>
+				resolveGitSelector(join(fixture.repo, "missing-repository"), [
+					{ ref: "v1" },
+				]),
+			(error) =>
+				error instanceof GitSourceError && error.code === "git-repository-read",
+		);
+		await assert.rejects(
+			() => resolveGitSelector(fixture.repo, [{ ref: "same" }]),
+			(error) =>
+				error instanceof GitSourceError && error.code === "git-ref-ambiguous",
+		);
+		await assert.rejects(
+			() => resolveGitSelector(fixture.repo, [{ from: "v2", to: "v1" }]),
+			(error) =>
+				error instanceof GitSourceError && error.code === "git-range-invalid",
+		);
+		await assert.rejects(
+			() => resolveGitSelector(fixture.repo, [{ ref: "v1" }, { ref: "v2" }]),
+			(error) =>
+				error instanceof GitSourceError &&
+				error.code === "git-selector-incompatible",
+		);
+		await assert.rejects(
+			() =>
+				resolveGitSelector(fixture.repo, [
+					{ from: "v1", to: "range-a" },
+					{ from: "v1", to: "range-b" },
+				]),
+			(error) =>
+				error instanceof GitSourceError &&
+				error.code === "git-selector-ambiguous" &&
+				Array.isArray(error.details.revisions) &&
+				error.details.revisions.includes(fixture.revisions.x) &&
+				error.details.revisions.includes(fixture.revisions.y),
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("Git Source materialization supports repository roots and internal paths", async () => {
+	const fixture = await createGitFixture();
+	try {
+		const rootSource = await materializeGitSource(
+			fixture.repo,
+			{
+				provider: "git",
+				locator: { repository: fixture.repo },
+				selector: { ref: "v1" },
+			},
+			fixture.revisions.base,
+		);
+		try {
+			assert.equal(
+				(await readFile(join(rootSource.sourceRoot, "source.yaml"))).toString(),
+				"schemaVersion: 1\n",
+			);
+		} finally {
+			await rootSource.cleanup();
+		}
+
+		const reference = {
+			provider: "git" as const,
+			locator: { repository: fixture.repo, path: "nested/source" },
+			selector: { ref: "v1" as const },
+		};
+		const first = await materializeGitSource(
+			fixture.repo,
+			reference,
+			fixture.revisions.base,
+		);
+		const second = await materializeGitSource(
+			fixture.repo,
+			reference,
+			fixture.revisions.base,
+		);
+		try {
+			assert.equal(
+				(await readFile(join(first.sourceRoot, "source.yaml"))).toString(),
+				"schemaVersion: 1\n",
+			);
+			assert.equal(first.fingerprint, second.fingerprint);
+		} finally {
+			await first.cleanup();
+			await second.cleanup();
+		}
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("doctor resolves Git Sources at the repository root and internal paths", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"      path: nested/source",
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		await writeFile(join(fixture.consumerRoot, "generated.txt"), "base\n");
+		await writeFile(join(fixture.consumerRoot, "nested.txt"), "nested\n");
+		const result = await runGitReadOnlyCommand(fixture, gitFixture.repo, {
+			...commandFor(await installedBin(), [
+				"doctor",
+				"--json",
+				"--root",
+				fixture.consumerRoot,
+			]),
+			cwd: projectRoot,
+		});
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stderr, "");
+		const envelope = parseJsonOutput<DoctorEnvelope>(result.stdout);
+		assert.equal(envelope.status, "ok");
+		assert.deepEqual(
+			envelope.actions.map(({ target }) => target),
+			["generated.txt", "nested.txt"],
+		);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+async function configureGitConsumer(
+	fixture: Fixture,
+	gitFixture: GitFixture,
+	selector: string,
+): Promise<void> {
+	await writeFile(
+		join(fixture.consumerRoot, "tbboot.yaml"),
+		[
+			"schemaVersion: 1",
+			"sources:",
+			"  - provider: git",
+			"    locator:",
+			`      repository: ${gitFixture.repo}`,
+			"    selector:",
+			`      ref: ${selector}`,
+			"",
+		].join("\n"),
+	);
+}
+
+test("install creates and reuses an authoritative Git lockfile", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await configureGitConsumer(fixture, gitFixture, "line-y");
+		const first = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(first.exitCode, 0, `${first.stdout}\n${first.stderr}`);
+		const lockPath = join(fixture.consumerRoot, "tbboot.lock.yaml");
+		const firstLock = parseYaml(await readFile(lockPath, "utf8")) as {
+			schemaVersion: number;
+			sources: Array<{
+				source: {
+					provider: string;
+					locator: { repository: string };
+					selector: unknown;
+				};
+				revision: string;
+				fingerprint: string;
+			}>;
+		};
+		assert.equal(firstLock.schemaVersion, 1);
+		assert.equal(firstLock.sources.length, 1);
+		const firstEntry = firstLock.sources[0];
+		assert.ok(firstEntry);
+		assert.equal(firstEntry.source.provider, "git");
+		assert.equal(firstEntry.source.locator.repository, gitFixture.repo);
+		assert.deepEqual(firstEntry.source.selector, { ref: "line-y" });
+		assert.match(firstEntry.revision, /^[0-9a-f]{40}$/);
+		assert.match(firstEntry.fingerprint, /^[0-9a-f]{64}$/);
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ revision?: string }> };
+		assert.equal(state.effects[0]?.revision, firstEntry.revision);
+		await writeFile(join(gitFixture.repo, "baseline/input.txt"), "changed\n");
+		await git(gitFixture.repo, ["add", "--all"]);
+		await git(gitFixture.repo, ["commit", "--quiet", "-m", "advance"]);
+
+		const second = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(second.exitCode, 0, `${second.stdout}\n${second.stderr}`);
+		const secondLock = parseYaml(
+			await readFile(lockPath, "utf8"),
+		) as typeof firstLock;
+		assert.equal(secondLock.sources[0]?.revision, firstEntry.revision);
+		assert.equal(
+			(await readFile(join(fixture.consumerRoot, "generated.txt"))).toString(),
+			"base\n",
+		);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("Git lockfile and artifacts stay untouched when another source fails preflight", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				`    locator:\n      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../missing-source",
+				"",
+			].join("\n"),
+		);
+		const result = await runGitReadOnlyCommand(fixture, gitFixture.repo, {
+			...commandFor(await installedBin(), [
+				"install",
+				"--json",
+				"--root",
+				fixture.consumerRoot,
+			]),
+			cwd: projectRoot,
+		});
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stdout, /source-read/);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("stale Git lockfiles require update and frozen mode blocks missing entries", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await configureGitConsumer(fixture, gitFixture, "v1");
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.lock.yaml"),
+			"schemaVersion: 1\nsources: []\n",
+		);
+		const frozen = await runGitReadOnlyCommand(fixture, gitFixture.repo, {
+			...commandFor(await installedBin(), [
+				"install",
+				"--dry-run",
+				"--frozen-lockfile",
+				"--json",
+				"--root",
+				fixture.consumerRoot,
+			]),
+			cwd: projectRoot,
+		});
+		assert.equal(frozen.exitCode, 1);
+		assert.deepEqual(
+			parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(
+				frozen.stdout,
+			).diagnostics.map(({ code }) => code),
+			["lockfile-stale"],
+		);
+
+		const initial = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(initial.exitCode, 0, `${initial.stdout}\n${initial.stderr}`);
+		await configureGitConsumer(fixture, gitFixture, "line-y");
+		const normal = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(normal.exitCode, 1);
+		const update = await runWritableCli(fixture, [
+			"install",
+			"--update-lock",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(update.exitCode, 0, `${update.stdout}\n${update.stderr}`);
+		const lock = parseYaml(
+			await readFile(join(fixture.consumerRoot, "tbboot.lock.yaml"), "utf8"),
+		) as { sources: Array<{ source: unknown }> };
+		const updatedEntry = lock.sources[0];
+		assert.ok(updatedEntry);
+		assert.deepEqual((updatedEntry.source as { selector: unknown }).selector, {
+			ref: "line-y",
+		});
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("invalid Git lockfiles block resolution before Git access", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${join(gitFixture.repo, "missing-repository")}`,
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.lock.yaml"),
+			"schemaVersion: 1\nsources: [\n",
+		);
+		const result = await runGitReadOnlyCommand(fixture, gitFixture.repo, {
+			...commandFor(await installedBin(), [
+				"install",
+				"--json",
+				"--root",
+				fixture.consumerRoot,
+			]),
+			cwd: projectRoot,
+		});
+		assert.equal(result.exitCode, 1);
+		assert.deepEqual(
+			parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(
+				result.stdout,
+			).diagnostics.map(({ code }) => code),
+			["lockfile-invalid"],
+		);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("Git locator paths are normalized before duplicate detection", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"      path: nested/./source",
+				"    selector:",
+				"      ref: v1",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"      path: nested/source",
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		const { result, envelope } = await runDoctor(fixture);
+		assert.equal(result.exitCode, 1);
+		assert.ok(
+			envelope.diagnostics.some(({ code }) => code === "duplicate-source"),
+		);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("lock updates replace equivalent normalized Git locators", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"      path: nested/./source",
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		const relativeRepository = relative(fixture.consumerRoot, gitFixture.repo)
+			.split(sep)
+			.join("/");
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.lock.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - source:",
+				"      provider: git",
+				"      locator:",
+				`        repository: ${relativeRepository}`,
+				"        path: nested/./source",
+				"      selector:",
+				"        ref: v1",
+				"    revision: old",
+				"    fingerprint: old",
+				"",
+			].join("\n"),
+		);
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--update-lock",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+		const lock = parseYaml(
+			await readFile(join(fixture.consumerRoot, "tbboot.lock.yaml"), "utf8"),
+		) as {
+			sources: Array<{
+				source: { locator: { repository: string; path?: string } };
+			}>;
+		};
+		assert.equal(lock.sources.length, 1);
+		assert.equal(lock.sources[0]?.source.locator.repository, gitFixture.repo);
+		assert.equal(lock.sources[0]?.source.locator.path, "nested/source");
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("compatible Git selectors reuse one authoritative lock entry", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      from: v1",
+				"      to: v2",
+				"",
+			].join("\n"),
+		);
+		const first = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(first.exitCode, 0, `${first.stdout}\n${first.stderr}`);
+		const second = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(second.exitCode, 0, `${second.stdout}\n${second.stderr}`);
+	} finally {
+		await gitFixture.cleanup();
 		await fixture.cleanup();
 	}
 });
@@ -302,6 +948,35 @@ async function runReadOnlyCommand(
 	}
 }
 
+async function runGitReadOnlyCommand(
+	fixture: Fixture,
+	gitRepository: string,
+	command: CommandOptions,
+): Promise<CommandResult> {
+	const before = await snapshotTree(
+		fixture.consumerRoot,
+		gitRepository,
+		fixture.profileRoot,
+	);
+	try {
+		return await runCommand({
+			...command,
+			env: {
+				...command.env,
+				USERPROFILE: fixture.profileRoot,
+				HOME: fixture.profileRoot,
+			},
+		});
+	} finally {
+		const after = await snapshotTree(
+			fixture.consumerRoot,
+			gitRepository,
+			fixture.profileRoot,
+		);
+		assert.deepEqual(after, before, "Git doctor modified a watched tree");
+	}
+}
+
 test("usage errors return 2 and print usage only on stderr", async () => {
 	const fixture = await createFixture();
 	try {
@@ -326,6 +1001,47 @@ test("usage errors return 2 and print usage only on stderr", async () => {
 			assert.equal(result.exitCode, 2, args.join(" "));
 			assert.equal(result.stdout, "", args.join(" "));
 			assert.match(result.stderr, /usage: tbboot doctor/, args.join(" "));
+		}
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("parses lockfile modes and rejects duplicates or incompatible modes", async () => {
+	const fixture = await createFixture();
+	try {
+		for (const flag of ["--update-lock", "--frozen-lockfile"]) {
+			const result = await runCli(fixture, [
+				"install",
+				"--dry-run",
+				"--json",
+				"--root",
+				fixture.consumerRoot,
+				flag,
+			]);
+			assert.equal(result.exitCode, 0, flag);
+			assert.equal(result.stderr, "", flag);
+			assert.equal(
+				parseJsonOutput<{ command: string }>(result.stdout).command,
+				"install",
+			);
+		}
+
+		for (const args of [
+			["--update-lock", "--update-lock"],
+			["--frozen-lockfile", "--frozen-lockfile"],
+			["--update-lock", "--frozen-lockfile"],
+		]) {
+			const result = await runCli(fixture, [
+				"install",
+				"--dry-run",
+				"--root",
+				fixture.consumerRoot,
+				...args,
+			]);
+			assert.equal(result.exitCode, 2, args.join(" "));
+			assert.equal(result.stdout, "", args.join(" "));
+			assert.match(result.stderr, /usage: tbboot install/, args.join(" "));
 		}
 	} finally {
 		await fixture.cleanup();
@@ -476,7 +1192,7 @@ test("discovers only first-level Recipes in lexical order and preserves Step ord
 	}
 });
 
-test("rejects unsupported providers and duplicate normalized local Sources", async () => {
+test("reports Git repository errors and duplicate normalized local Sources", async () => {
 	const fixture = await createFixture();
 	try {
 		await writeFile(
@@ -500,11 +1216,11 @@ test("rejects unsupported providers and duplicate normalized local Sources", asy
 		assert.equal(result.exitCode, 1);
 		assert.deepEqual(
 			envelope.diagnostics.map(({ code }) => code),
-			["unsupported-source-provider", "duplicate-source"],
+			["git-repository-read", "duplicate-source"],
 		);
 		const firstDiagnostic = envelope.diagnostics[0];
 		assert.ok(firstDiagnostic);
-		assert.equal(firstDiagnostic.path, "/sources/0/provider");
+		assert.equal(firstDiagnostic.path, "/sources/0/selector");
 		const secondDiagnostic = envelope.diagnostics[1];
 		assert.ok(secondDiagnostic);
 		assert.equal(secondDiagnostic.path, "/sources/2/locator/path");

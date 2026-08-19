@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { stringify } from "yaml";
-import type { Diagnostic, StateDocument, StateEffect } from "./contract.ts";
+import type {
+	Diagnostic,
+	LockfileDocument,
+	StateDocument,
+	StateEffect,
+} from "./contract.ts";
 import { validateDocument } from "./contract.ts";
 import {
 	type ArtifactAction,
@@ -162,6 +167,9 @@ function effectFor(
 	if (artifact.type === "file") {
 		return {
 			source,
+			...(artifact.revision === undefined
+				? {}
+				: { revision: artifact.revision }),
 			sourceFingerprint: sha256(artifact.input),
 			recipe: artifact.recipe,
 			step: artifact.step,
@@ -176,6 +184,7 @@ function effectFor(
 	}
 	return {
 		source,
+		...(artifact.revision === undefined ? {} : { revision: artifact.revision }),
 		sourceFingerprint: sha256(artifact.input),
 		recipe: artifact.recipe,
 		step: artifact.step,
@@ -227,6 +236,23 @@ async function persistState(
 	return changed;
 }
 
+async function persistLockfile(
+	root: string,
+	document: LockfileDocument,
+): Promise<boolean> {
+	const path = join(root, "tbboot.lock.yaml");
+	const next = stringify(document);
+	let previous: string | undefined;
+	try {
+		previous = await readFile(path, "utf8");
+	} catch (error) {
+		if (!isNotFound(error)) throw error;
+	}
+	if (previous === next) return false;
+	await writeFile(path, next, "utf8");
+	return true;
+}
+
 async function applyArtifact(
 	artifact: PlannedArtifact,
 	force: boolean,
@@ -259,9 +285,19 @@ async function applyArtifact(
 
 export async function runInstall(
 	root: string,
-	options: { dryRun: boolean; force: boolean },
+	options: {
+		dryRun: boolean;
+		force: boolean;
+		updateLock?: boolean;
+		frozenLockfile?: boolean;
+	},
 ): Promise<InstallResult> {
-	const plan = await planLocalInstall(root, options.force);
+	const lockMode = options.frozenLockfile
+		? "frozen"
+		: options.updateLock
+			? "update"
+			: "normal";
+	const plan = await planLocalInstall(root, options.force, lockMode);
 	const envelope = envelopeFromPlan(plan);
 	const state = await readState(plan.consumerRoot, envelope.diagnostics);
 	if (
@@ -271,6 +307,20 @@ export async function runInstall(
 		return finish(envelope);
 	}
 	if (options.dryRun) return finish(envelope);
+	if (plan.lockfile !== undefined && plan.lockfileChanged) {
+		try {
+			envelope.changed =
+				(await persistLockfile(plan.consumerRoot, plan.lockfile)) ||
+				envelope.changed;
+		} catch (error) {
+			addDiagnostic(
+				envelope.diagnostics,
+				"lockfile-write",
+				`Unable to persist tbboot.lock.yaml: ${errorMessage(error)}`,
+			);
+			return finish(envelope);
+		}
+	}
 
 	const effects = new Map(
 		state.effects.map((effect) => [stateKey(effect), effect]),
