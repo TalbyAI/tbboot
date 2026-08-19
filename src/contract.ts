@@ -95,11 +95,17 @@ export type FileFragmentStateEffect = {
 
 export type StateEffect = FileStateEffect | FileFragmentStateEffect;
 export type StateDocument = { schemaVersion: 1; effects: StateEffect[] };
-export type LockEntry = {
-	source: SourceReference;
-	revision: string;
-	fingerprint: string;
-};
+export type LockEntry =
+	| {
+			source: GitSourceReference;
+			revision: string;
+			fingerprint: string;
+	  }
+	| {
+			source: LocalSourceReference;
+			revision?: never;
+			fingerprint: string;
+	  };
 export type LockfileDocument = { schemaVersion: 1; sources: LockEntry[] };
 
 export type DocumentByKind = {

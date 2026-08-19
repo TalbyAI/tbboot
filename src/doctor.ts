@@ -883,7 +883,37 @@ async function readLockfile(
 }
 
 function sameSelector(left: unknown, right: unknown): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
+	if (left === undefined || right === undefined) return left === right;
+	if (
+		typeof left !== "object" ||
+		left === null ||
+		typeof right !== "object" ||
+		right === null
+	)
+		return false;
+	const leftSelector = left as Record<string, unknown>;
+	const rightSelector = right as Record<string, unknown>;
+	if ("ref" in leftSelector || "ref" in rightSelector) {
+		return (
+			"ref" in leftSelector &&
+			"ref" in rightSelector &&
+			leftSelector.ref === rightSelector.ref
+		);
+	}
+	return (
+		"from" in leftSelector &&
+		"from" in rightSelector &&
+		"to" in leftSelector &&
+		"to" in rightSelector &&
+		leftSelector.from === rightSelector.from &&
+		leftSelector.to === rightSelector.to
+	);
+}
+
+function isGitLockEntry(
+	entry: LockEntry,
+): entry is Extract<LockEntry, { source: { provider: "git" } }> {
+	return entry.source.provider === "git";
 }
 
 async function lockIdentity(
@@ -981,296 +1011,314 @@ async function buildLocalPlan(
 	const cleanups: Array<() => Promise<void>> = [];
 	let preparedLockfile: LockfileDocument | undefined;
 	let lockfileChanged = false;
-	const gitGroups = new Map<
-		string,
-		{
-			firstIndex: number;
-			indexes: number[];
-			references: Extract<SourceReference, { provider: "git" }>[];
-			repositoryRoot: string;
-		}
-	>();
-	for (const [index, reference] of manifest.sources.entries()) {
-		if (reference.provider === "local") {
-			const sourceRoot = await resolveLocalSource(
-				root,
-				reference.locator.path,
-				index,
-				envelope,
-			);
-			if (sourceRoot !== undefined) {
-				resolvedSources.set(index, {
-					reference,
-					sourceRoot,
-					identity: gitIdentity(sourceRoot, reference),
-				});
+	try {
+		const gitGroups = new Map<
+			string,
+			{
+				firstIndex: number;
+				indexes: number[];
+				references: Extract<SourceReference, { provider: "git" }>[];
+				repositoryRoot: string;
 			}
-			continue;
-		}
-		const normalizedPath = normalizeGitPath(reference.locator.path);
-		const normalizedReference: Extract<SourceReference, { provider: "git" }> = {
-			...reference,
-			locator: {
-				repository: reference.locator.repository,
-				...(normalizedPath === undefined ? {} : { path: normalizedPath }),
-			},
-		};
-		const repositoryPath = normalizeGitRepository(
-			root,
-			normalizedReference.locator.repository,
-		);
-		const repositoryRoot = await realpath(repositoryPath).catch(
-			() => repositoryPath,
-		);
-		const key = gitIdentity(repositoryRoot, normalizedReference);
-		const group = gitGroups.get(key) ?? {
-			firstIndex: index,
-			indexes: [],
-			references: [],
-			repositoryRoot,
-		};
-		group.indexes.push(index);
-		group.references.push(normalizedReference);
-		gitGroups.set(key, group);
-	}
-	if (mode === "install" && lockMode !== "none" && gitGroups.size > 0) {
-		const loaded = await readLockfile(root, envelope);
-		preparedLockfile = loaded.document;
-		if (!loaded.valid) {
-			return {
-				envelope,
-				descriptors,
-				consumerRoot,
-				lockfile: preparedLockfile,
-				lockfileChanged: false,
-			};
-		}
-		if (lockMode === "frozen" && !loaded.exists) {
-			envelope.diagnostics.push(
-				diagnostic(
-					"lockfile-missing",
-					"Frozen lockfile mode requires tbboot.lock.yaml",
-					{ document: "tbboot.lock.yaml" },
-				),
-			);
-		}
-	}
-
-	for (const group of gitGroups.values()) {
-		const reference = group.references[0];
-		const selectorsSeen = new Map<string, number>();
-		for (const [offset, groupedReference] of group.references.entries()) {
-			const selectorKey =
-				JSON.stringify(groupedReference.selector) ?? "undefined";
-			const firstOffset = selectorsSeen.get(selectorKey);
-			if (firstOffset !== undefined) {
-				envelope.diagnostics.push(
-					diagnostic(
-						"duplicate-source",
-						`Source duplicates declaration at /sources/${group.indexes[firstOffset]}/locator/path; remove one duplicate declaration`,
-						{
-							document: documentPaths.manifest,
-							path: `/sources/${group.indexes[offset]}/locator/path`,
-							source: groupedReference.locator.repository,
-						},
-					),
+		>();
+		for (const [index, reference] of manifest.sources.entries()) {
+			if (reference.provider === "local") {
+				const sourceRoot = await resolveLocalSource(
+					root,
+					reference.locator.path,
+					index,
+					envelope,
 				);
+				if (sourceRoot !== undefined) {
+					resolvedSources.set(index, {
+						reference,
+						sourceRoot,
+						identity: gitIdentity(sourceRoot, reference),
+					});
+				}
+				continue;
 			}
-			selectorsSeen.set(selectorKey, offset);
-		}
-		try {
-			const normalizedRepository = await realpath(group.repositoryRoot).catch(
-				() => group.repositoryRoot,
-			);
+			const normalizedPath = normalizeGitPath(reference.locator.path);
 			const normalizedReference: Extract<SourceReference, { provider: "git" }> =
 				{
+					...reference,
+					locator: {
+						repository: reference.locator.repository,
+						...(normalizedPath === undefined ? {} : { path: normalizedPath }),
+					},
+				};
+			const repositoryPath = normalizeGitRepository(
+				root,
+				normalizedReference.locator.repository,
+			);
+			const repositoryRoot = await realpath(repositoryPath).catch(
+				() => repositoryPath,
+			);
+			const key = gitIdentity(repositoryRoot, normalizedReference);
+			const group = gitGroups.get(key) ?? {
+				firstIndex: index,
+				indexes: [],
+				references: [],
+				repositoryRoot,
+			};
+			group.indexes.push(index);
+			group.references.push(normalizedReference);
+			gitGroups.set(key, group);
+		}
+		if (mode === "install" && lockMode !== "none" && gitGroups.size > 0) {
+			const loaded = await readLockfile(root, envelope);
+			preparedLockfile = loaded.document;
+			if (!loaded.valid) {
+				return {
+					envelope,
+					descriptors,
+					consumerRoot,
+					lockfile: preparedLockfile,
+					lockfileChanged: false,
+				};
+			}
+			if (lockMode === "frozen" && !loaded.exists) {
+				envelope.diagnostics.push(
+					diagnostic(
+						"lockfile-missing",
+						"Frozen lockfile mode requires tbboot.lock.yaml",
+						{ document: "tbboot.lock.yaml" },
+					),
+				);
+				return {
+					envelope,
+					descriptors,
+					consumerRoot,
+					lockfile: preparedLockfile,
+					lockfileChanged: false,
+				};
+			}
+		}
+
+		for (const group of gitGroups.values()) {
+			const reference = group.references[0];
+			const selectorsSeen = new Map<string, number>();
+			for (const [offset, groupedReference] of group.references.entries()) {
+				const pointerFor = (
+					index: number,
+					ref: typeof groupedReference,
+				): string =>
+					`/sources/${index}/locator${ref.locator.path === undefined ? "" : "/path"}`;
+				const selectorKey =
+					JSON.stringify(groupedReference.selector) ?? "undefined";
+				const firstOffset = selectorsSeen.get(selectorKey);
+				if (firstOffset !== undefined) {
+					envelope.diagnostics.push(
+						diagnostic(
+							"duplicate-source",
+							`Source duplicates declaration at ${pointerFor(group.indexes[firstOffset], group.references[firstOffset])}; remove one duplicate declaration`,
+							{
+								document: documentPaths.manifest,
+								path: pointerFor(group.indexes[offset], groupedReference),
+								source: groupedReference.locator.repository,
+							},
+						),
+					);
+				}
+				selectorsSeen.set(selectorKey, offset);
+			}
+			try {
+				const normalizedRepository = await realpath(group.repositoryRoot).catch(
+					() => group.repositoryRoot,
+				);
+				const normalizedReference: Extract<
+					SourceReference,
+					{ provider: "git" }
+				> = {
 					...reference,
 					locator: {
 						...reference.locator,
 						repository: normalizedRepository,
 					},
 				};
-			let lockEntry: LockEntry | undefined;
-			if (preparedLockfile !== undefined) {
-				for (const entry of preparedLockfile.sources) {
-					if (
-						entry.source.provider === "git" &&
-						(await lockIdentity(root, entry.source)) ===
-							(await lockIdentity(root, normalizedReference))
-					) {
-						lockEntry = entry;
-						break;
+				let lockEntry: LockEntry | undefined;
+				if (preparedLockfile !== undefined) {
+					for (const entry of preparedLockfile.sources) {
+						if (
+							entry.source.provider === "git" &&
+							(await lockIdentity(root, entry.source)) ===
+								(await lockIdentity(root, normalizedReference))
+						) {
+							lockEntry = entry;
+							break;
+						}
 					}
 				}
-			}
-			let useLock =
-				lockEntry !== undefined &&
-				lockMode !== "update" &&
-				sameSelector(lockEntry.source.selector, reference.selector);
-			if (useLock && lockEntry !== undefined) {
-				const selectorsToCheck = [
-					...(reference.selector !== undefined && "from" in reference.selector
-						? [reference.selector]
-						: []),
-					...group.references
-						.slice(1)
-						.flatMap(({ selector }) =>
-							selector === undefined ? [] : [selector],
-						),
-				];
-				for (const selector of selectorsToCheck) {
-					if (
-						!(await isGitRevisionAllowed(
-							group.repositoryRoot,
-							selector,
-							lockEntry.revision,
-						))
-					) {
-						useLock = false;
-						break;
+				let useLock =
+					lockEntry !== undefined &&
+					lockMode !== "update" &&
+					sameSelector(lockEntry.source.selector, reference.selector);
+				if (useLock && lockEntry !== undefined && isGitLockEntry(lockEntry)) {
+					const selectorsToCheck = [
+						...(reference.selector !== undefined && "from" in reference.selector
+							? [reference.selector]
+							: []),
+						...group.references
+							.slice(1)
+							.flatMap(({ selector }) =>
+								selector === undefined ? [] : [selector],
+							),
+					];
+					for (const selector of selectorsToCheck) {
+						if (
+							!(await isGitRevisionAllowed(
+								group.repositoryRoot,
+								selector,
+								lockEntry.revision,
+							))
+						) {
+							useLock = false;
+							break;
+						}
 					}
 				}
-			}
-			if (lockMode === "frozen" && !useLock) {
-				envelope.diagnostics.push(
-					lockDiagnostic(
-						"lockfile-stale",
-						lockEntry === undefined
-							? "Frozen lockfile has no compatible Git Source entry"
-							: "Git Source selector differs from the authoritative lock entry",
-						group.firstIndex,
-						reference,
-					),
-				);
-				continue;
-			}
-			if (lockEntry !== undefined && lockMode !== "update" && !useLock) {
-				envelope.diagnostics.push(
-					lockDiagnostic(
-						"lockfile-stale",
-						"Git Source selector differs from the authoritative lock entry",
-						group.firstIndex,
-						reference,
-					),
-				);
-				continue;
-			}
-			if (useLock && lockEntry !== undefined) {
-				try {
-					const materialized = await materializeGitSource(
-						root,
-						normalizedReference,
-						lockEntry.revision,
-					);
-					if (materialized.fingerprint !== lockEntry.fingerprint) {
-						await materialized.cleanup();
-						throw new Error(
-							"Git Source fingerprint differs from the authoritative lock entry",
-						);
-					}
-					cleanups.push(materialized.cleanup);
-					resolvedSources.set(group.firstIndex, {
-						reference: normalizedReference,
-						sourceRoot: materialized.sourceRoot,
-						identity: await lockIdentity(root, normalizedReference),
-						revision: materialized.revision,
-					});
-					continue;
-				} catch (error) {
+				if (lockMode === "frozen" && !useLock) {
 					envelope.diagnostics.push(
 						lockDiagnostic(
 							"lockfile-stale",
-							`Unable to use authoritative Git Source revision: ${errorMessage(error)}`,
+							lockEntry === undefined
+								? "Frozen lockfile has no compatible Git Source entry"
+								: "Git Source selector differs from the authoritative lock entry",
 							group.firstIndex,
 							reference,
 						),
 					);
 					continue;
 				}
+				if (lockEntry !== undefined && lockMode !== "update" && !useLock) {
+					envelope.diagnostics.push(
+						lockDiagnostic(
+							"lockfile-stale",
+							"Git Source selector differs from the authoritative lock entry",
+							group.firstIndex,
+							reference,
+						),
+					);
+					continue;
+				}
+				if (useLock && lockEntry !== undefined && isGitLockEntry(lockEntry)) {
+					try {
+						const materialized = await materializeGitSource(
+							root,
+							normalizedReference,
+							lockEntry.revision,
+						);
+						if (materialized.fingerprint !== lockEntry.fingerprint) {
+							await materialized.cleanup();
+							throw new Error(
+								"Git Source fingerprint differs from the authoritative lock entry",
+							);
+						}
+						cleanups.push(materialized.cleanup);
+						resolvedSources.set(group.firstIndex, {
+							reference: normalizedReference,
+							sourceRoot: materialized.sourceRoot,
+							identity: await lockIdentity(root, normalizedReference),
+							revision: materialized.revision,
+						});
+						continue;
+					} catch (error) {
+						envelope.diagnostics.push(
+							lockDiagnostic(
+								"lockfile-stale",
+								`Unable to use authoritative Git Source revision: ${errorMessage(error)}`,
+								group.firstIndex,
+								reference,
+							),
+						);
+						continue;
+					}
+				}
+				const selectors = group.references.flatMap(({ selector }) =>
+					selector === undefined ? [] : [selector],
+				);
+				const revision =
+					selectors.length === 0
+						? await resolveGitHead(group.repositoryRoot)
+						: (await resolveGitSelector(group.repositoryRoot, selectors))
+								.revision;
+				const materialized = await materializeGitSource(
+					root,
+					reference,
+					revision,
+				);
+				cleanups.push(materialized.cleanup);
+				resolvedSources.set(group.firstIndex, {
+					reference: normalizedReference,
+					sourceRoot: materialized.sourceRoot,
+					identity: await lockIdentity(root, normalizedReference),
+					revision: materialized.revision,
+				});
+				if (preparedLockfile !== undefined) {
+					preparedLockfile = {
+						schemaVersion: 1,
+						sources: await replaceLockEntry(root, preparedLockfile.sources, {
+							source: normalizedReference,
+							revision: materialized.revision,
+							fingerprint: materialized.fingerprint,
+						}),
+					};
+					lockfileChanged = true;
+				}
+			} catch (error) {
+				envelope.diagnostics.push(
+					gitDiagnostic(error, group.firstIndex, reference),
+				);
 			}
-			const selectors = group.references.flatMap(({ selector }) =>
-				selector === undefined ? [] : [selector],
-			);
-			const revision =
-				selectors.length === 0
-					? await resolveGitHead(group.repositoryRoot)
-					: (await resolveGitSelector(group.repositoryRoot, selectors))
-							.revision;
-			const materialized = await materializeGitSource(
-				root,
-				reference,
-				revision,
-			);
-			cleanups.push(materialized.cleanup);
-			resolvedSources.set(group.firstIndex, {
-				reference: normalizedReference,
-				sourceRoot: materialized.sourceRoot,
-				identity: await lockIdentity(root, normalizedReference),
-				revision: materialized.revision,
-			});
-			if (preparedLockfile !== undefined) {
-				preparedLockfile = {
-					schemaVersion: 1,
-					sources: await replaceLockEntry(root, preparedLockfile.sources, {
-						source: normalizedReference,
-						revision: materialized.revision,
-						fingerprint: materialized.fingerprint,
-					}),
-				};
-				lockfileChanged = true;
-			}
-		} catch (error) {
-			envelope.diagnostics.push(
-				gitDiagnostic(error, group.firstIndex, reference),
-			);
 		}
-	}
 
-	const seenSources = new Map<string, number>();
-	for (const [index] of manifest.sources.entries()) {
-		const resolvedSource = resolvedSources.get(index);
-		if (resolvedSource === undefined) continue;
-		const key = resolvedSource.identity;
-		if (seenSources.has(key)) {
-			const firstIndex = seenSources.get(key) as number;
-			envelope.diagnostics.push(
-				diagnostic(
-					"duplicate-source",
-					`Source duplicates declaration at /sources/${firstIndex}/locator/path; remove one duplicate declaration`,
-					{
-						document: documentPaths.manifest,
-						path: `/sources/${index}/locator/path`,
-						source: resolvedSource.sourceRoot,
-					},
-				),
+		const seenSources = new Map<string, number>();
+		for (const [index] of manifest.sources.entries()) {
+			const resolvedSource = resolvedSources.get(index);
+			if (resolvedSource === undefined) continue;
+			const key = resolvedSource.identity;
+			if (seenSources.has(key)) {
+				const firstIndex = seenSources.get(key) as number;
+				envelope.diagnostics.push(
+					diagnostic(
+						"duplicate-source",
+						`Source duplicates declaration at /sources/${firstIndex}/locator/path; remove one duplicate declaration`,
+						{
+							document: documentPaths.manifest,
+							path: `/sources/${index}/locator/path`,
+							source: resolvedSource.sourceRoot,
+						},
+					),
+				);
+				continue;
+			}
+			seenSources.set(key, index);
+			await collectSourceSteps(
+				resolvedSource.sourceRoot,
+				resolvedSource.reference,
+				descriptors,
+				envelope,
+				{
+					revision: resolvedSource.revision,
+				},
 			);
-			continue;
 		}
-		seenSources.set(key, index);
-		await collectSourceSteps(
-			resolvedSource.sourceRoot,
-			resolvedSource.reference,
-			descriptors,
+
+		registerCollisions(descriptors, envelope);
+		for (const descriptor of descriptors) {
+			envelope.actions.push(descriptor.action);
+			await evaluateDescriptor(descriptor, envelope, mode, force);
+		}
+		return {
 			envelope,
-			{
-				revision: resolvedSource.revision,
-			},
-		);
+			descriptors,
+			consumerRoot,
+			lockfile: preparedLockfile,
+			lockfileChanged,
+		};
+	} finally {
+		for (const cleanup of cleanups.reverse()) await cleanup();
 	}
-
-	registerCollisions(descriptors, envelope);
-	for (const descriptor of descriptors) {
-		envelope.actions.push(descriptor.action);
-		await evaluateDescriptor(descriptor, envelope, mode, force);
-	}
-	for (const cleanup of cleanups.reverse()) await cleanup();
-	return {
-		envelope,
-		descriptors,
-		consumerRoot,
-		lockfile: preparedLockfile,
-		lockfileChanged,
-	};
 }
 
 export async function planLocalInstall(

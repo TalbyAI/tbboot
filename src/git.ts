@@ -133,6 +133,12 @@ function runGit(args: string[], cwd?: string): Promise<Buffer> {
 				windowsHide: true,
 				maxBuffer: 32 * 1024 * 1024,
 				encoding: "buffer",
+				timeout: 120_000,
+				env: {
+					...process.env,
+					GIT_TERMINAL_PROMPT: "0",
+					GIT_ASKPASS: "echo",
+				},
 			},
 			(error, stdout) => {
 				if (error) {
@@ -232,7 +238,15 @@ async function resolveRef(
 			.toString("utf8")
 			.split("\n")
 			.filter(Boolean);
-		refs = remoteRefs.filter((ref) => ref.endsWith(`/${branchName}`));
+		const remotePrefix = "refs/remotes/";
+		refs = remoteRefs.filter((ref) => {
+			if (!ref.startsWith(remotePrefix)) return false;
+			const remoteAndBranch = ref.slice(remotePrefix.length);
+			const separator = remoteAndBranch.indexOf("/");
+			return (
+				separator > 0 && remoteAndBranch.slice(separator + 1) === branchName
+			);
+		});
 	}
 	if (refs.length === 0) {
 		throw new GitSourceError(
@@ -354,11 +368,22 @@ async function revisionSatisfiesSelectorLocal(
 	);
 }
 
+function assertGitObjectName(revision: string): void {
+	if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(revision)) {
+		throw new GitSourceError(
+			"git-repository-read",
+			`Git revision is not a full Git object name: ${revision}`,
+			{ revision },
+		);
+	}
+}
+
 export async function isGitRevisionAllowed(
 	repositoryRoot: string,
 	selector: GitSelector,
 	revision: string,
 ): Promise<boolean> {
+	assertGitObjectName(revision);
 	if (!isRepositoryUrl(repositoryRoot)) {
 		return revisionSatisfiesSelectorLocal(repositoryRoot, selector, revision);
 	}
@@ -496,6 +521,7 @@ export async function materializeGitSource(
 ): Promise<GitSource> {
 	let temporary: TemporaryRepository | undefined;
 	try {
+		assertGitObjectName(revision);
 		const repository = await repositoryPath(
 			consumerRoot,
 			reference.locator.repository,

@@ -19,6 +19,7 @@ import type { DoctorEnvelope } from "../src/doctor.ts";
 import { planLocalInstall } from "../src/doctor.ts";
 import {
 	GitSourceError,
+	isGitRevisionAllowed,
 	materializeGitSource,
 	resolveGitSelector,
 } from "../src/git.ts";
@@ -201,6 +202,10 @@ async function git(repo: string, args: string[]): Promise<string> {
 	const result = await runCommand({
 		...commandFor("git", args),
 		cwd: repo,
+		env: {
+			GIT_CONFIG_GLOBAL: join(repo, ".git-global-config"),
+			GIT_CONFIG_SYSTEM: join(repo, ".git-system-config"),
+		},
 	});
 	assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
 	return result.stdout.trim();
@@ -227,6 +232,13 @@ async function createGitFixture(): Promise<GitFixture> {
 		await git(repo, ["init", "--quiet", "--initial-branch=main"]);
 		await git(repo, ["config", "user.name", "tbboot fixture"]);
 		await git(repo, ["config", "user.email", "fixture@example.test"]);
+		await git(repo, ["config", "commit.gpgsign", "false"]);
+		await git(repo, ["config", "tag.gpgsign", "false"]);
+		await git(repo, [
+			"config",
+			"core.hooksPath",
+			join(repo, ".git", "no-hooks"),
+		]);
 		const base = await commitGitFiles(
 			repo,
 			{
@@ -368,6 +380,20 @@ test("Git selector provider resolves refs, ranges, and intersections", async () 
 				error.details.revisions.includes(fixture.revisions.x) &&
 				error.details.revisions.includes(fixture.revisions.y),
 		);
+		await git(fixture.repo, [
+			"update-ref",
+			"refs/remotes/origin/topic/release",
+			fixture.revisions.x,
+		]);
+		await git(fixture.repo, [
+			"update-ref",
+			"refs/remotes/upstream/release",
+			fixture.revisions.y,
+		]);
+		assert.equal(
+			(await resolveGitSelector(fixture.repo, [{ ref: "release" }])).revision,
+			fixture.revisions.y,
+		);
 	} finally {
 		await fixture.cleanup();
 	}
@@ -393,6 +419,29 @@ test("Git Source materialization supports repository roots and internal paths", 
 		} finally {
 			await rootSource.cleanup();
 		}
+		await assert.rejects(
+			() =>
+				materializeGitSource(
+					fixture.repo,
+					{
+						provider: "git",
+						locator: { repository: fixture.repo },
+					},
+					"not-a-git-object",
+				),
+			(error) =>
+				error instanceof GitSourceError &&
+				error.code === "git-repository-read" &&
+				error.message.includes("full Git object name"),
+		);
+		await assert.rejects(
+			() =>
+				isGitRevisionAllowed(fixture.repo, { ref: "v1" }, "not-a-git-object"),
+			(error) =>
+				error instanceof GitSourceError &&
+				error.code === "git-repository-read" &&
+				error.message.includes("full Git object name"),
+		);
 
 		const reference = {
 			provider: "git" as const,
@@ -606,6 +655,8 @@ test("stale Git lockfiles require update and frozen mode blocks missing entries"
 			join(fixture.consumerRoot, "tbboot.lock.yaml"),
 			"schemaVersion: 1\nsources: []\n",
 		);
+		const lockPath = join(fixture.consumerRoot, "tbboot.lock.yaml");
+		await rm(lockPath);
 		const frozen = await runGitReadOnlyCommand(fixture, gitFixture.repo, {
 			...commandFor(await installedBin(), [
 				"install",
@@ -622,7 +673,7 @@ test("stale Git lockfiles require update and frozen mode blocks missing entries"
 			parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(
 				frozen.stdout,
 			).diagnostics.map(({ code }) => code),
-			["lockfile-stale"],
+			["lockfile-missing"],
 		);
 
 		const initial = await runWritableCli(fixture, [
@@ -632,6 +683,10 @@ test("stale Git lockfiles require update and frozen mode blocks missing entries"
 			fixture.consumerRoot,
 		]);
 		assert.equal(initial.exitCode, 0, `${initial.stdout}\n${initial.stderr}`);
+		const lockBeforeStale = await readFile(lockPath);
+		const artifactBeforeStale = await readFile(
+			join(fixture.consumerRoot, "generated.txt"),
+		);
 		await configureGitConsumer(fixture, gitFixture, "line-y");
 		const normal = await runWritableCli(fixture, [
 			"install",
@@ -640,6 +695,11 @@ test("stale Git lockfiles require update and frozen mode blocks missing entries"
 			fixture.consumerRoot,
 		]);
 		assert.equal(normal.exitCode, 1);
+		assert.deepEqual(await readFile(lockPath), lockBeforeStale);
+		assert.deepEqual(
+			await readFile(join(fixture.consumerRoot, "generated.txt")),
+			artifactBeforeStale,
+		);
 		const update = await runWritableCli(fixture, [
 			"install",
 			"--update-lock",
@@ -734,6 +794,41 @@ test("Git locator paths are normalized before duplicate detection", async () => 
 		assert.ok(
 			envelope.diagnostics.some(({ code }) => code === "duplicate-source"),
 		);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("root Git duplicate diagnostics point at locator", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		const { envelope } = await runDoctor(fixture);
+		const duplicate = envelope.diagnostics.find(
+			({ code }) => code === "duplicate-source",
+		);
+		assert.ok(duplicate);
+		assert.equal(duplicate.path, "/sources/1/locator");
+		assert.match(duplicate.message, /\/sources\/0\/locator/);
 	} finally {
 		await gitFixture.cleanup();
 		await fixture.cleanup();
@@ -841,6 +936,25 @@ test("compatible Git selectors reuse one authoritative lock entry", async () => 
 			fixture.consumerRoot,
 		]);
 		assert.equal(first.exitCode, 0, `${first.stdout}\n${first.stderr}`);
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v1",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      to: v2",
+				"      from: v1",
+				"",
+			].join("\n"),
+		);
 		const second = await runWritableCli(fixture, [
 			"install",
 			"--json",
