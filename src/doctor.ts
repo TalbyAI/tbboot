@@ -886,30 +886,33 @@ function sameSelector(left: unknown, right: unknown): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function lockIdentity(
+async function lockIdentity(
 	root: string,
 	reference: Extract<SourceReference, { provider: "git" }>,
-): string {
-	return gitIdentity(
-		normalizeGitRepository(root, reference.locator.repository),
-		reference,
+): Promise<string> {
+	const repository = normalizeGitRepository(root, reference.locator.repository);
+	const canonicalRepository = await realpath(repository).catch(
+		() => repository,
 	);
+	return gitIdentity(canonicalRepository, reference);
 }
 
-function replaceLockEntry(
+async function replaceLockEntry(
 	root: string,
 	entries: LockEntry[],
 	entry: LockEntry,
-): LockEntry[] {
-	const result = entries.filter(
-		(existing) =>
-			existing.source.provider !== entry.source.provider ||
+): Promise<LockEntry[]> {
+	const result: LockEntry[] = [];
+	for (const existing of entries) {
+		const sameSource =
+			existing.source.provider === entry.source.provider &&
 			(existing.source.provider === "git" && entry.source.provider === "git"
-				? lockIdentity(root, existing.source) !==
-					lockIdentity(root, entry.source)
-				: JSON.stringify(existing.source.locator) !==
-					JSON.stringify(entry.source.locator)),
-	);
+				? (await lockIdentity(root, existing.source)) ===
+					(await lockIdentity(root, entry.source))
+				: JSON.stringify(existing.source.locator) ===
+					JSON.stringify(entry.source.locator));
+		if (!sameSource) result.push(existing);
+	}
 	result.push(entry);
 	return result;
 }
@@ -1087,12 +1090,19 @@ async function buildLocalPlan(
 						repository: normalizedRepository,
 					},
 				};
-			const lockEntry = preparedLockfile?.sources.find(
-				(entry) =>
-					entry.source.provider === "git" &&
-					lockIdentity(root, entry.source) ===
-						lockIdentity(root, normalizedReference),
-			);
+			let lockEntry: LockEntry | undefined;
+			if (preparedLockfile !== undefined) {
+				for (const entry of preparedLockfile.sources) {
+					if (
+						entry.source.provider === "git" &&
+						(await lockIdentity(root, entry.source)) ===
+							(await lockIdentity(root, normalizedReference))
+					) {
+						lockEntry = entry;
+						break;
+					}
+				}
+			}
 			let useLock =
 				lockEntry !== undefined &&
 				lockMode !== "update" &&
@@ -1162,7 +1172,7 @@ async function buildLocalPlan(
 					resolvedSources.set(group.firstIndex, {
 						reference: normalizedReference,
 						sourceRoot: materialized.sourceRoot,
-						identity: lockIdentity(root, normalizedReference),
+						identity: await lockIdentity(root, normalizedReference),
 						revision: materialized.revision,
 					});
 					continue;
@@ -1195,13 +1205,13 @@ async function buildLocalPlan(
 			resolvedSources.set(group.firstIndex, {
 				reference: normalizedReference,
 				sourceRoot: materialized.sourceRoot,
-				identity: lockIdentity(root, normalizedReference),
+				identity: await lockIdentity(root, normalizedReference),
 				revision: materialized.revision,
 			});
 			if (preparedLockfile !== undefined) {
 				preparedLockfile = {
 					schemaVersion: 1,
-					sources: replaceLockEntry(root, preparedLockfile.sources, {
+					sources: await replaceLockEntry(root, preparedLockfile.sources, {
 						source: normalizedReference,
 						revision: materialized.revision,
 						fingerprint: materialized.fingerprint,

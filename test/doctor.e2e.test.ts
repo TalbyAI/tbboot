@@ -4,6 +4,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	realpath,
 	rename,
 	rm,
 	symlink,
@@ -521,7 +522,10 @@ test("install creates and reuses an authoritative Git lockfile", async () => {
 		const firstEntry = firstLock.sources[0];
 		assert.ok(firstEntry);
 		assert.equal(firstEntry.source.provider, "git");
-		assert.equal(firstEntry.source.locator.repository, gitFixture.repo);
+		assert.equal(
+			firstEntry.source.locator.repository,
+			await realpath(gitFixture.repo),
+		);
 		assert.deepEqual(firstEntry.source.selector, { ref: "line-y" });
 		assert.match(firstEntry.revision, /^[0-9a-f]{40}$/);
 		assert.match(firstEntry.fingerprint, /^[0-9a-f]{64}$/);
@@ -754,7 +758,13 @@ test("lock updates replace equivalent normalized Git locators", async () => {
 				"",
 			].join("\n"),
 		);
-		const relativeRepository = relative(fixture.consumerRoot, gitFixture.repo)
+		const repositoryAlias = join(fixture.root, "git-alias");
+		await symlink(
+			gitFixture.repo,
+			repositoryAlias,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		const relativeRepository = relative(fixture.consumerRoot, repositoryAlias)
 			.split(sep)
 			.join("/");
 		await writeFile(
@@ -790,7 +800,10 @@ test("lock updates replace equivalent normalized Git locators", async () => {
 			}>;
 		};
 		assert.equal(lock.sources.length, 1);
-		assert.equal(lock.sources[0]?.source.locator.repository, gitFixture.repo);
+		assert.equal(
+			lock.sources[0]?.source.locator.repository,
+			await realpath(gitFixture.repo),
+		);
 		assert.equal(lock.sources[0]?.source.locator.path, "nested/source");
 	} finally {
 		await gitFixture.cleanup();
