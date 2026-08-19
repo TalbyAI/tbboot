@@ -32,15 +32,19 @@ export type Diagnostic = {
 	step?: number;
 };
 
+export type GitSelector = { ref: string } | { from: string; to: string };
+
 export type LocalSourceReference = {
 	provider: "local";
 	locator: { path: string };
+	selector?: Record<string, never>;
 	recipes?: string[];
 };
 
 export type GitSourceReference = {
 	provider: "git";
 	locator: { repository: string; path?: string };
+	selector?: GitSelector;
 	recipes?: string[];
 };
 
@@ -91,13 +95,25 @@ export type FileFragmentStateEffect = {
 
 export type StateEffect = FileStateEffect | FileFragmentStateEffect;
 export type StateDocument = { schemaVersion: 1; effects: StateEffect[] };
+export type LockEntry =
+	| {
+			source: GitSourceReference;
+			revision: string;
+			fingerprint: string;
+	  }
+	| {
+			source: LocalSourceReference;
+			revision?: never;
+			fingerprint: string;
+	  };
+export type LockfileDocument = { schemaVersion: 1; sources: LockEntry[] };
 
 export type DocumentByKind = {
 	manifest: ManifestDocument;
 	source: SourceDocument;
 	recipe: RecipeDocument;
 	catalog: Record<string, unknown>;
-	lockfile: Record<string, unknown>;
+	lockfile: LockfileDocument;
 	state: StateDocument;
 	trust: Record<string, unknown>;
 };
