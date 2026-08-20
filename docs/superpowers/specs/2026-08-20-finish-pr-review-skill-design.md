@@ -39,13 +39,18 @@ commits y `push` y debe requerir una orden explícita del usuario.
    es `main`, y que owner, repositorio y ref del PR coinciden con el remote
    local.
 2. Registrar antes de `create_goal` la rama, HEAD, estado, parches staged/no
-   staged y rutas no rastreadas para conservar el baseline del Goal.
+   staged y rutas no rastreadas para conservar el baseline del Goal. Capturar
+   el hash SHA-256 de cada archivo no rastreado y el inventario recursivo con
+   hashes de cada directorio; esos paths no se modifican ni se incluyen en el
+   commit.
 3. Crear un Goal dedicado con el objetivo completo y sus criterios de
    terminación.
 4. Consultar el estado del pull request, los checks del pipeline y todos los
    comentarios o hilos de revisión. La consulta de `reviewThreads` se hace con
-   `gh api graphql --paginate` y lee `isResolved` para identificar hilos
-   accionables no resueltos.
+   `gh api graphql --paginate --slurp`, define `$endCursor: String`, usa
+   `after: $endCursor`, solicita `pageInfo { hasNextPage endCursor }` y procesa
+   todas las páginas para leer `isResolved` e identificar hilos accionables no
+   resueltos.
 5. Diagnosticar cada fallo del pipeline y cada comentario accionable; corregir
    la causa en el repositorio o responder rechazándolo con una justificación
    verificable.
@@ -85,7 +90,10 @@ haya llegado todavía la revisión posterior a un `push` no cumple el criterio.
 - No hacer `push` de cambios anteriores al Goal; solo se pueden preparar para
   commit cambios ausentes del baseline registrado.
 - Antes de cada push, detenerse si el owner, repositorio o ref del PR no
-  coincide con el remote local y la rama actual.
+  coincide con el remote local y la rama actual, o si `git ls-remote` no
+  coincide con el `headRefOid` leído justo antes del push.
+- El push debe ser fast-forward normal; no se permite force, mirror ni borrar
+  o recrear refs.
 - No marcar el Goal como completo para escapar de un fallo, un reviewer
   pendiente o un estado ambiguo.
 - Si no puede identificarse el pull request, la rama head, el pipeline o el

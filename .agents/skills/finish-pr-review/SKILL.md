@@ -17,9 +17,13 @@ aprobarlo, hacer merge ni cerrarlo.
 3. Antes de crear el Goal, registra como baseline de este Goal la rama,
    `git rev-parse HEAD`, `git status --short --branch`, los parches de
    `git diff --binary` y `git diff --cached --binary`, y las rutas no
-   rastreadas. Conserva ese baseline para separar los cambios nuevos de los
-   preexistentes; si un archivo mezcla ambos, conserva los hunks previos y
-   añade solo los hunks creados durante este Goal.
+   rastreadas. Para cada archivo no rastreado registra su hash SHA-256; para
+   directorios registra además su inventario recursivo y los hashes de sus
+   archivos. No modifiques, borres, renombres ni incluyas esos paths en el
+   commit del Goal; si el trabajo los necesita, detente.
+   Conserva ese baseline para separar los cambios nuevos de los preexistentes;
+   si un archivo rastreado mezcla ambos, conserva los hunks previos y añade
+   solo los hunks creados durante este Goal.
 4. Crea un único Goal con `create_goal` antes de comenzar el trabajo.
 
 Si la puerta no se puede confirmar, no continúes ni cierres el Goal.
@@ -29,17 +33,21 @@ Si la puerta no se puede confirmar, no continúes ni cierres el Goal.
 Repite este ciclo hasta que se cumpla el predicado de finalización:
 
 1. Inspecciona con `gh` los comentarios del PR, los review threads y los
-   required checks. Consulta además `gh api graphql --paginate` sobre
-   `pullRequest.reviewThreads`, leyendo `isResolved` y los cuerpos de sus
-   comentarios; un hilo es accionable si está sin resolver y tiene un cuerpo
-   no vacío.
+   required checks. Consulta además `gh api graphql --paginate --slurp` sobre
+   `pullRequest.reviewThreads`: la query define `$endCursor: String`, usa
+   `after: $endCursor` y solicita `pageInfo { hasNextPage endCursor }`; procesa
+   todas las páginas, leyendo `isResolved` y los cuerpos de sus comentarios.
+   Un hilo es accionable si está sin resolver y tiene un cuerpo no vacío.
 2. Corrige los fallos del pipeline y los comentarios válidos.
 3. Responde los comentarios rechazados con evidencia documentada.
 4. Ejecuta las comprobaciones relevantes.
 5. Haz commit solo de cambios acotados al PR y ausentes del baseline del Goal.
-6. Antes de hacer push, vuelve a leer con `gh` el owner, repositorio, ref y
-   `headRefOid` del PR y compáralos con el remote local y la rama actual. Si
-   owner, repositorio, ref o remote no coinciden, detente.
+6. Antes de hacer push, vuelve a leer con `gh` el owner (`owner`), repositorio
+   (`repository`), ref (`ref`) y
+   `headRefOid` del PR y compáralos con el remote local y la rama actual.
+   Compara también el SHA de `git ls-remote` para esa ref con el `headRefOid`;
+   si owner, repositorio, ref, remote o SHA no coinciden, detente. Haz solo un
+   push normal fast-forward: nunca uses force, mirror ni borres/recrees refs.
 7. Haz push únicamente a la head branch del PR.
 8. Después del push, vuelve a leer el estado de CI y de los reviewers.
 
@@ -75,8 +83,12 @@ Cuando el predicado completo sea verdadero, llama a
 - Conserva el trabajo no relacionado.
 - Conserva el baseline del Goal y solo prepara para commit los cambios nuevos
   de ese Goal.
-- Valida antes de cada push que el owner, repositorio y ref del PR coinciden
-  con el remote local y la rama actual.
+- Valida antes de cada push que el owner (`owner`), repositorio (`repository`)
+  y ref (`ref`) del PR coinciden
+  con el remote local y la rama actual, y que `git ls-remote` coincide con el
+  `headRefOid` leído justo antes del push.
+- Solo permite pushes fast-forward normales; nunca uses force, mirror ni
+  operaciones que borren o recreen refs.
 - Solo puedes crear commits y hacer push con cambios creados durante este
   Goal; conserva intacto todo trabajo preexistente o no relacionado.
 - Nunca uses `gh pr approve`, `gh pr merge` ni `gh pr close`.

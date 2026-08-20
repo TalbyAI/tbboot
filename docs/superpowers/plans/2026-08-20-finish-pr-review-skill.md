@@ -13,9 +13,10 @@
 
 - La skill solo se inicia mediante invocación explícita del usuario.
 - Antes de `create_goal` se registra el baseline de rama, HEAD, estado,
-  parches staged/no staged y rutas no rastreadas; solo se preparan cambios
-  ausentes de ese baseline.
-- Se permiten commits y `push` solo sobre la rama head del pull request y para cambios creados dentro del Goal, después de validar owner, repositorio, ref y remote.
+  parches staged/no staged y rutas no rastreadas; cada archivo no rastreado
+  conserva un hash SHA-256 y cada directorio un inventario recursivo con hashes;
+  esos paths no se modifican ni se incluyen en el commit.
+- Se permiten commits y `push` solo sobre la rama head del pull request y para cambios creados dentro del Goal, después de validar owner, repositorio, ref, remote y que `git ls-remote` coincide con el `headRefOid`; el push debe ser fast-forward sin force, mirror ni borrado de refs.
 - El Goal solo se completa con pipeline verde para el head SHA probado, review threads accionables resueltos o comentarios rechazados con evidencia, y confirmación de que no queda revisión pendiente.
 - No aprobar, fusionar ni cerrar el pull request; no escribir en `main`.
 - La skill es local al repositorio y vive en `.agents/skills/finish-pr-review/SKILL.md`.
@@ -88,10 +89,13 @@ The body must state, in this order:
    repository and ref against the local remote, record the baseline before
    `create_goal`, and create one Goal using `create_goal`;
 3. the loop: inspect PR comments/review threads and required checks with `gh`,
-   including a paginated `pullRequest.reviewThreads` query that reads
-   `isResolved`, fix pipeline failures and valid comments, answer rejected
-   comments with evidence, run relevant checks, commit only changes absent from
-   the baseline, push only the PR head, then re-read CI and reviewer state;
+   including `gh api graphql --paginate --slurp` with `$endCursor: String`,
+   `after: $endCursor`, and `pageInfo { hasNextPage endCursor }` over
+   `pullRequest.reviewThreads`, processing every page and reading `isResolved`,
+   fix pipeline failures and valid comments, answer rejected comments with
+   evidence, run relevant checks, commit only changes absent from the baseline,
+   push only the PR head after the `git ls-remote` fast-forward guard, then
+   re-read CI and reviewer state;
 4. the wait rule: pending checks or a review expected after a push keep the Goal
    active;
 5. the completion predicate: all required checks green for the tested
@@ -132,11 +136,13 @@ strings are present: `name: finish-pr-review`,
 `disable-model-invocation: true`, `create_goal`, `get_goal`, `update_goal`,
 `gh pr approve`, `gh pr merge`, `gh pr close`, `main`, `CodeRabbit`, `pending`,
 `head branch`, `headRefOid`, `reviewThreads`, `isResolved`, `baseline`,
-`remote`, and `status: "complete"`. Add negative assertions that no line
+`remote`, `owner`, `repository`, `ref`, and `status: "complete"`. Add negative assertions that no line
 starting as an executable command invokes `gh pr approve`, `gh pr merge`, or
 `gh pr close`; prose mentioning these guards must remain allowed. Assert also
 that the skill text contains the Goal-scoped change rule, the unresolved-thread
-condition, the head-branch binding, and the tested-head condition.
+condition, the head-branch binding, the tested-head condition, the owner /
+repository / ref correspondence with the push remote and current branch, and
+the no-force fast-forward guard.
 
 - [ ] **Step 2: Check format and scope**
 
