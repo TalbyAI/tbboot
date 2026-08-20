@@ -1390,6 +1390,271 @@ test("compatible Git selectors reuse one authoritative lock entry", async () => 
 	}
 });
 
+test("compatible transitive Git selectors converge independent of discovery order", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	const firstRoot = join(fixture.root, "first");
+	const secondRoot = join(fixture.root, "second");
+	const bridgeRoot = join(fixture.root, "bridge");
+	try {
+		const c1 = await commitGitFiles(
+			gitFixture.repo,
+			{ "nested/source/source.yaml": "schemaVersion: 1\n# c1\n" },
+			"c1",
+		);
+		await git(gitFixture.repo, ["tag", "c1", c1]);
+		const c2 = await commitGitFiles(
+			gitFixture.repo,
+			{ "nested/source/source.yaml": "schemaVersion: 1\n# c2\n" },
+			"c2",
+		);
+		await git(gitFixture.repo, ["tag", "c2", c2]);
+		for (const sourceRoot of [firstRoot, secondRoot, bridgeRoot]) {
+			await mkdir(sourceRoot, { recursive: true });
+		}
+		await writeFile(
+			join(firstRoot, "source.yaml"),
+			[
+				"schemaVersion: 1",
+				"dependencies:",
+				"  - name: shared",
+				"    provider: git",
+				"    locator:",
+				`      repository: ${JSON.stringify(gitFixture.repo)}`,
+				"      path: nested/source",
+				"    selector:",
+				"      from: c1",
+				"      to: c2",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(secondRoot, "source.yaml"),
+			[
+				"schemaVersion: 1",
+				"dependencies:",
+				"  - name: bridge",
+				"    provider: local",
+				"    locator:",
+				"      path: ../bridge",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(bridgeRoot, "source.yaml"),
+			[
+				"schemaVersion: 1",
+				"dependencies:",
+				"  - name: shared",
+				"    provider: git",
+				"    locator:",
+				`      repository: ${JSON.stringify(gitFixture.repo)}`,
+				"      path: nested/source",
+				"    selector:",
+				"      from: v1",
+				"      to: c1",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../first",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../second",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+		const lock = parseYaml(
+			await readFile(join(fixture.consumerRoot, "tbboot.lock.yaml"), "utf8"),
+		) as {
+			sources: Array<{
+				source: { locator: { path?: string } };
+				revision: string;
+			}>;
+		};
+		assert.equal(lock.sources.length, 1);
+		assert.equal(lock.sources[0]?.source.locator.path, "nested/source");
+		assert.equal(lock.sources[0]?.revision, c1);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("discarded Source revisions do not keep unreachable Git dependencies in the lockfile", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	const firstRoot = join(fixture.root, "first");
+	const secondRoot = join(fixture.root, "second");
+	const bridgeRoot = join(fixture.root, "bridge");
+	try {
+		const c1 = await commitGitFiles(
+			gitFixture.repo,
+			{ "nested/source/source.yaml": "schemaVersion: 1\n# c1\n" },
+			"c1",
+		);
+		await git(gitFixture.repo, ["tag", "c1", c1]);
+		const c2 = await commitGitFiles(
+			gitFixture.repo,
+			{
+				"nested/source/source.yaml": [
+					"schemaVersion: 1",
+					"dependencies:",
+					"  - name: discarded",
+					"    provider: git",
+					"    locator:",
+					`      repository: ${JSON.stringify(gitFixture.repo)}`,
+					"      path: nested/dependency",
+					"    selector:",
+					"      ref: c2",
+					"",
+				].join("\n"),
+				"nested/dependency/source.yaml": "schemaVersion: 1\n",
+			},
+			"c2",
+		);
+		await git(gitFixture.repo, ["tag", "c2", c2]);
+		for (const sourceRoot of [firstRoot, secondRoot, bridgeRoot]) {
+			await mkdir(sourceRoot, { recursive: true });
+		}
+		await writeFile(
+			join(firstRoot, "source.yaml"),
+			[
+				"schemaVersion: 1",
+				"dependencies:",
+				"  - name: shared",
+				"    provider: git",
+				"    locator:",
+				`      repository: ${JSON.stringify(gitFixture.repo)}`,
+				"      path: nested/source",
+				"    selector:",
+				"      from: c1",
+				"      to: c2",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(secondRoot, "source.yaml"),
+			[
+				"schemaVersion: 1",
+				"dependencies:",
+				"  - name: bridge",
+				"    provider: local",
+				"    locator:",
+				"      path: ../bridge",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(bridgeRoot, "source.yaml"),
+			[
+				"schemaVersion: 1",
+				"dependencies:",
+				"  - name: shared",
+				"    provider: git",
+				"    locator:",
+				`      repository: ${JSON.stringify(gitFixture.repo)}`,
+				"      path: nested/source",
+				"    selector:",
+				"      from: v1",
+				"      to: c1",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../first",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../second",
+				"",
+			].join("\n"),
+		);
+
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+		const lock = parseYaml(
+			await readFile(join(fixture.consumerRoot, "tbboot.lock.yaml"), "utf8"),
+		) as {
+			sources: Array<{
+				source: { locator: { path?: string } };
+				revision: string;
+			}>;
+		};
+		assert.deepEqual(
+			lock.sources.map(({ source }) => source.locator.path),
+			["nested/source"],
+		);
+		assert.equal(lock.sources[0]?.revision, c1);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("update-lock prunes Git entries for a local-only Manifest", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.lock.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - source:",
+				"      provider: git",
+				"      locator:",
+				`        repository: ${JSON.stringify(gitFixture.repo)}`,
+				"        path: nested/source",
+				"      selector:",
+				"        ref: v1",
+				`    revision: ${gitFixture.revisions.base}`,
+				"    fingerprint: stale",
+				"",
+			].join("\n"),
+		);
+		const result = await runWritableCli(fixture, [
+			"install",
+			"--update-lock",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+		const lock = parseYaml(
+			await readFile(join(fixture.consumerRoot, "tbboot.lock.yaml"), "utf8"),
+		) as { sources: unknown[] };
+		assert.deepEqual(lock.sources, []);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
 async function writeRecipe(
 	sourceRoot: string,
 	recipe: string,

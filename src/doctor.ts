@@ -1073,6 +1073,8 @@ async function buildLocalPlan(
 	let lockfileChanged = false;
 	let lockfileLoaded = false;
 	let lockfileUsable = true;
+	let lockfileExists = false;
+	let lockfileFinalized = false;
 
 	const enqueue = (node: ResolvedSource): void => {
 		if (queued.has(node.identity)) return;
@@ -1084,23 +1086,13 @@ async function buildLocalPlan(
 		if (lockfileLoaded) return lockfileUsable;
 		lockfileLoaded = true;
 		const loaded = await readLockfile(root, envelope);
+		lockfileExists = loaded.exists;
 		if (!loaded.valid) {
 			preparedLockfile = loaded.document;
 			lockfileUsable = false;
 			return false;
 		}
 		preparedLockfile = loaded.document;
-		if (lockMode === "frozen" && !loaded.exists) {
-			envelope.diagnostics.push(
-				diagnostic(
-					"lockfile-missing",
-					"Frozen lockfile mode requires tbboot.lock.yaml",
-					{ document: "tbboot.lock.yaml" },
-				),
-			);
-			lockfileUsable = false;
-			return false;
-		}
 		return true;
 	};
 
@@ -1246,14 +1238,30 @@ async function buildLocalPlan(
 		node: ResolvedSource,
 	): Promise<string | undefined> => {
 		node.invalid = false;
+		if (
+			mode === "install" &&
+			lockMode !== "none" &&
+			!(await ensureLockfile())
+		) {
+			node.invalid = true;
+			return undefined;
+		}
 		if (node.reference.provider === "local") return "local";
 		const declaration = node.declarations[0] as SourceDeclaration;
 		const repositoryRoot = node.repositoryRoot as string;
-		if (mode === "install" && lockMode !== "none") {
-			if (!(await ensureLockfile())) {
-				node.invalid = true;
-				return undefined;
+		if (lockMode === "frozen" && !lockfileExists) {
+			node.invalid = true;
+			if (lockfileUsable) {
+				envelope.diagnostics.push(
+					diagnostic(
+						"lockfile-missing",
+						"Frozen lockfile mode requires tbboot.lock.yaml",
+						{ document: "tbboot.lock.yaml" },
+					),
+				);
+				lockfileUsable = false;
 			}
+			return undefined;
 		}
 
 		let lockEntry:
@@ -1270,10 +1278,11 @@ async function buildLocalPlan(
 				}
 			}
 		}
-		let useLock =
+		const lockSelectorMatches =
 			lockEntry !== undefined &&
-			lockMode !== "update" &&
 			sameSelector(lockEntry.source.selector, node.reference.selector);
+		let useLock =
+			lockEntry !== undefined && lockMode !== "update" && lockSelectorMatches;
 		if (useLock && lockEntry !== undefined) {
 			for (const [index, reference] of node.references.entries()) {
 				if (
@@ -1304,7 +1313,12 @@ async function buildLocalPlan(
 			);
 			return undefined;
 		}
-		if (lockEntry !== undefined && lockMode !== "update" && !useLock) {
+		if (
+			lockEntry !== undefined &&
+			lockMode !== "update" &&
+			!useLock &&
+			(!lockSelectorMatches || node.references.length === 1)
+		) {
 			node.invalid = true;
 			envelope.diagnostics.push(
 				lockDiagnostic(
@@ -1375,7 +1389,7 @@ async function buildLocalPlan(
 					materialized.cleanup,
 				);
 			}
-			if (preparedLockfile !== undefined) {
+			if (preparedLockfile !== undefined && lockfileFinalized) {
 				const before = JSON.stringify(preparedLockfile);
 				preparedLockfile = {
 					schemaVersion: 1,
@@ -1421,10 +1435,14 @@ async function buildLocalPlan(
 			const node = queue.shift() as ResolvedSource;
 			queued.delete(node.identity);
 			const revision = await resolveNode(node);
-			if (
-				revision === undefined ||
-				(node.sourceDocumentRead && node.expandedRevision === revision)
-			)
+			if (revision === undefined) {
+				node.dependencies = [];
+				node.sourceDocument = undefined;
+				node.sourceDocumentRead = false;
+				node.expandedRevision = undefined;
+				continue;
+			}
+			if (node.sourceDocumentRead && node.expandedRevision === revision)
 				continue;
 			node.dependencies = [];
 			node.sourceDocument = undefined;
@@ -1517,13 +1535,19 @@ async function buildLocalPlan(
 		};
 		for (const node of roots) visit(node);
 
-		if (
-			preparedLockfile !== undefined &&
-			[...nodes.values()].some(({ reference }) => reference.provider === "git")
-		) {
+		lockfileFinalized = true;
+		for (const node of ordered) {
+			if (node.reference.provider !== "git" || node.invalid) continue;
+			await resolveNode(node);
+		}
+
+		if (preparedLockfile !== undefined) {
 			const declared = new Set(
-				[...nodes.values()]
-					.filter(({ reference }) => reference.provider === "git")
+				ordered
+					.filter(
+						({ reference, invalid }) =>
+							!invalid && reference.provider === "git",
+					)
 					.map(({ identity }) => identity),
 			);
 			const retained: LockEntry[] = [];
