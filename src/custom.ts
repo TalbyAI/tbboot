@@ -92,7 +92,6 @@ export type PreparedCustomOperation = {
 };
 
 export type PreparedCustomStep = {
-	optional: boolean;
 	context: CustomContext;
 	check: PreparedCustomOperation;
 	install?: PreparedCustomOperation;
@@ -109,7 +108,6 @@ export type CustomAuthorizationOptions = {
 
 type RunnerError = Error & {
 	code?: string;
-	originalCode?: string;
 	stdout?: string;
 	stderr?: string;
 	exitCode?: number | null;
@@ -288,7 +286,10 @@ function pwshArgs(
 		[
 			"$requestJson = [Console]::In.ReadToEnd()",
 			"$Request = $requestJson | ConvertFrom-Json",
+			"$result = & {",
 			content ?? "",
+			"}",
+			"$result | ConvertTo-Json -Compress -Depth 100",
 		].join("\n"),
 	];
 }
@@ -312,10 +313,7 @@ export function buildInvocation(
 	};
 }
 
-async function terminateProcessTree(
-	pid: number | undefined,
-	child: ChildProcess,
-): Promise<void> {
+async function terminateProcessTree(pid: number | undefined): Promise<void> {
 	if (pid === undefined) return;
 	if (process.platform === "win32") {
 		try {
@@ -330,7 +328,31 @@ async function terminateProcessTree(
 			throw runnerError("tree-termination-failed", { cause });
 		}
 	}
-	child.kill("SIGTERM");
+	try {
+		process.kill(-pid, "SIGTERM");
+	} catch (cause) {
+		if ((cause as NodeJS.ErrnoException).code !== "ESRCH") {
+			throw runnerError("tree-termination-failed", { cause });
+		}
+		return;
+	}
+	const deadline = Date.now() + CLOSE_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		try {
+			process.kill(-pid, 0);
+		} catch (cause) {
+			if ((cause as NodeJS.ErrnoException).code === "ESRCH") return;
+			throw runnerError("tree-termination-failed", { cause });
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	try {
+		process.kill(-pid, "SIGKILL");
+	} catch (cause) {
+		if ((cause as NodeJS.ErrnoException).code !== "ESRCH") {
+			throw runnerError("tree-termination-failed", { cause });
+		}
+	}
 }
 
 function waitForClose(
@@ -427,6 +449,7 @@ export async function runHandler(options: {
 	try {
 		child = spawn(invocation.file, invocation.args, {
 			cwd: options.cwd,
+			detached: process.platform !== "win32",
 			shell: false,
 			windowsHide: true,
 			stdio: ["pipe", "pipe", "pipe"],
@@ -449,7 +472,7 @@ export async function runHandler(options: {
 	const stop = (nextReason: "timeout" | "cancelled"): Promise<void> => {
 		if (stopPromise) return stopPromise;
 		reason = nextReason;
-		stopPromise = terminateProcessTree(child.pid, child)
+		stopPromise = terminateProcessTree(child.pid)
 			.then(
 				() => notifyStop?.({ ok: true }),
 				(error) => notifyStop?.({ ok: false, error }),
@@ -486,11 +509,9 @@ export async function runHandler(options: {
 			await stopPromise;
 			throw runnerError(reason ?? "cancelled", { ...outcome });
 		}
-		cleanup();
 		if (outcome.spawnError) {
 			throw runnerError("spawn-failed", {
 				cause: outcome.spawnError,
-				originalCode: (outcome.spawnError as NodeJS.ErrnoException).code,
 				...outcome,
 			});
 		}
@@ -515,7 +536,6 @@ export async function runHandler(options: {
 		) {
 			throw runnerError("spawn-failed", {
 				cause: error,
-				originalCode: "ENOENT",
 			});
 		}
 		throw error;
@@ -802,7 +822,6 @@ export async function prepareCustomStep(
 	context: CustomContext,
 	authorization: CustomAuthorizationOptions = {},
 ): Promise<PreparedCustomStep> {
-	await authorized(context, authorization);
 	const check = await prepareOperation(
 		"check",
 		step.check as CustomOperation,
@@ -816,8 +835,8 @@ export async function prepareCustomStep(
 		step.uninstall === undefined
 			? undefined
 			: await prepareOperation("uninstall", step.uninstall, context);
+	await authorized(context, authorization);
 	return {
-		optional: step.optional === true,
 		context,
 		check,
 		...(install === undefined ? {} : { install }),

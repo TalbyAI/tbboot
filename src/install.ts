@@ -231,7 +231,9 @@ function effectFor(
 }
 
 function customEffect(
-	step: LocalInstallPlan["customSteps"][number],
+	step: LocalInstallPlan["customSteps"][number] & {
+		prepared: NonNullable<LocalInstallPlan["customSteps"][number]["prepared"]>;
+	},
 ): CustomStateEffect {
 	return {
 		source: step.source,
@@ -411,7 +413,8 @@ async function applyInstallPlan(
 		if (stopped) break;
 		if (action.type === "custom") {
 			const custom = customByAction.get(action);
-			if (custom === undefined) continue;
+			if (custom?.prepared === undefined) continue;
+			const prepared = custom.prepared;
 			const report = (
 				status: "missing" | "drift" | "error",
 				message: string,
@@ -434,11 +437,11 @@ async function applyInstallPlan(
 			};
 			try {
 				const run = async (
-					operation: typeof custom.prepared.check,
+					operation: typeof prepared.check,
 				): Promise<{ failed: boolean; fatal: boolean }> => {
 					const outcome = await runPreparedOperation(
 						operation,
-						custom.prepared.context,
+						prepared.context,
 						options.signal,
 					);
 					stderr += outcome.stderr;
@@ -455,14 +458,14 @@ async function applyInstallPlan(
 					}
 					return { failed: false, fatal: false };
 				};
-				if (custom.prepared.install !== undefined) {
-					const installation = await run(custom.prepared.install);
+				if (prepared.install !== undefined) {
+					const installation = await run(prepared.install);
 					if (installation.failed) {
 						stopped ||= installation.fatal;
 						continue;
 					}
 				}
-				const check = await run(custom.prepared.check);
+				const check = await run(prepared.check);
 				if (check.failed) {
 					stopped ||= check.fatal;
 					continue;
@@ -476,7 +479,7 @@ async function applyInstallPlan(
 						type: "custom",
 					}),
 				);
-				const effect = customEffect(custom);
+				const effect = customEffect({ ...custom, prepared });
 				if (!sameEffect(existing, effect)) {
 					effects.set(stateKey(effect), effect);
 					envelope.changed =
@@ -603,11 +606,17 @@ export async function runUninstall(
 	root: string,
 	options: UninstallOptions,
 ): Promise<UninstallResult> {
-	const plan = await planLocalInstall(root, true, "none", {
-		allowCustom: options.allowCustom,
-		profileRoot: options.profileRoot,
-		interactive: process.stdin.isTTY && process.stdout.isTTY,
-	});
+	const plan = await planLocalInstall(
+		root,
+		true,
+		"none",
+		{
+			allowCustom: options.allowCustom,
+			profileRoot: options.profileRoot,
+			interactive: process.stdin.isTTY && process.stdout.isTTY,
+		},
+		"uninstall",
+	);
 	try {
 		return await applyUninstallPlan(plan, options);
 	} finally {
@@ -653,7 +662,10 @@ async function applyUninstallPlan(
 		if (effect.type !== "custom") continue;
 		const custom = customByKey.get(stateKey(effect));
 		if (custom === undefined) continue;
-		if (custom.prepared.uninstall === undefined) {
+		if (
+			custom.prepared === undefined ||
+			custom.prepared.uninstall === undefined
+		) {
 			envelope.diagnostics.push({
 				code: "uninstall-unsupported",
 				severity: "warning",

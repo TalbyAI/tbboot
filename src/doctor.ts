@@ -10,7 +10,6 @@ import {
 	sep,
 } from "node:path";
 import type {
-	CustomStep,
 	Diagnostic,
 	DocumentKind,
 	LockEntry,
@@ -91,7 +90,7 @@ export type PlannedCustomStep = {
 	recipe: string;
 	step: number;
 	optional: boolean;
-	prepared: PreparedCustomStep;
+	prepared?: PreparedCustomStep;
 	action: ArtifactAction;
 };
 
@@ -139,7 +138,7 @@ type StepDescriptor = {
 	target?: string;
 	optional: boolean;
 	recipeRoot: string;
-	customStep?: CustomStep;
+	uninstallUnsupported?: boolean;
 	preparedCustom?: PreparedCustomStep;
 	inputPath?: PathResolution;
 	targetPath?: PathResolution;
@@ -381,6 +380,7 @@ async function collectSourceSteps(
 	descriptors: StepDescriptor[],
 	envelope: DoctorEnvelope,
 	metadata: {
+		mode?: "doctor" | "install" | "uninstall";
 		revision?: string;
 		sourceFingerprint?: string;
 		customAuthorization?: CustomAuthorizationOptions;
@@ -453,13 +453,17 @@ async function collectSourceSteps(
 					type: "custom",
 					optional: step.optional === true,
 					recipeRoot: join(sourceRoot, recipe),
-					customStep: step,
 					action: customAction({
 						source: sourceDisplay(sourceReference, sourceRoot),
 						recipe,
 						step: stepNumber,
 					}),
 				};
+				if (metadata.mode === "uninstall" && step.uninstall === undefined) {
+					descriptor.uninstallUnsupported = true;
+					descriptors.push(descriptor);
+					continue;
+				}
 				try {
 					const fingerprint =
 						metadata.sourceFingerprint ??
@@ -746,7 +750,7 @@ function fragmentState(
 async function evaluateDescriptor(
 	descriptor: StepDescriptor,
 	envelope: DoctorEnvelope,
-	mode: "doctor" | "install",
+	mode: "doctor" | "install" | "uninstall",
 	force: boolean,
 ): Promise<void> {
 	if (descriptor.collision) return;
@@ -1098,7 +1102,7 @@ function lockDiagnostic(
 
 async function buildLocalPlan(
 	root: string,
-	mode: "doctor" | "install",
+	mode: "doctor" | "install" | "uninstall",
 	force: boolean,
 	lockMode: LockMode = mode === "install" ? "normal" : "none",
 	customAuthorization: CustomAuthorizationOptions = {},
@@ -1690,6 +1694,7 @@ async function buildLocalPlan(
 				descriptors,
 				envelope,
 				{
+					mode,
 					revision: node.revision,
 					customAuthorization,
 					sourceFingerprint: node.fingerprint,
@@ -1731,10 +1736,11 @@ export async function planLocalInstall(
 	force: boolean,
 	lockMode: LockMode = "normal",
 	customAuthorization: CustomAuthorizationOptions = {},
+	mode: "install" | "uninstall" = "install",
 ): Promise<LocalInstallPlan> {
 	const built = await buildLocalPlan(
 		root,
-		"install",
+		mode,
 		force,
 		lockMode,
 		customAuthorization,
@@ -1772,7 +1778,11 @@ export async function planLocalInstall(
 		];
 	});
 	const customSteps = built.descriptors.flatMap((descriptor) => {
-		if (descriptor.type !== "custom" || descriptor.preparedCustom === undefined)
+		if (
+			descriptor.type !== "custom" ||
+			(descriptor.preparedCustom === undefined &&
+				!descriptor.uninstallUnsupported)
+		)
 			return [];
 		return [
 			{

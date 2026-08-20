@@ -2377,6 +2377,74 @@ test("runs an authorized inline Custom lifecycle and uninstalls its effect", asy
 	}
 });
 
+test("uninstall preserves Custom effects without an uninstall handler", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: true };\"",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			status: string;
+			diagnostics: Array<{ code: string; severity: string }>;
+		}>(uninstall.stdout);
+		assert.equal(envelope.status, "warning");
+		assert.deepEqual(envelope.diagnostics.at(-1), {
+			code: "uninstall-unsupported",
+			severity: "warning",
+			message: "Custom step does not declare an uninstall operation",
+			source: fixture.sourceRoot,
+			recipe: "custom",
+			step: 1,
+		});
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ type: string }> };
+		assert.equal(
+			state.effects.some(({ type }) => type === "custom"),
+			true,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("install dry-run defers authorized Custom processes", async () => {
 	const fixture = await createFixture();
 	try {
