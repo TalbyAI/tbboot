@@ -1,6 +1,7 @@
 # Finish PR Review Skill Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Fuente autoritativa: [Issue #48](https://github.com/TalbyAI/tbboot/issues/48).
 
 **Goal:** Crear una skill local que mantenga un Goal activo hasta resolver el pipeline y todos los comentarios de reviewers de un pull request sin aprobarlo, fusionarlo ni cerrarlo.
 
@@ -11,8 +12,11 @@
 ## Global Constraints
 
 - La skill solo se inicia mediante invocación explícita del usuario.
-- Se permiten commits y `push` solo sobre la rama head del pull request y para cambios creados dentro del Goal.
-- El Goal solo se completa con pipeline verde, comentarios resueltos o rechazados con evidencia y confirmación de que no queda revisión pendiente.
+- Antes de `create_goal` se registra el baseline de rama, HEAD, estado,
+  parches staged/no staged y rutas no rastreadas; solo se preparan cambios
+  ausentes de ese baseline.
+- Se permiten commits y `push` solo sobre la rama head del pull request y para cambios creados dentro del Goal, después de validar owner, repositorio, ref y remote.
+- El Goal solo se completa con pipeline verde para el head SHA probado, review threads accionables resueltos o comentarios rechazados con evidencia, y confirmación de que no queda revisión pendiente.
 - No aprobar, fusionar ni cerrar el pull request; no escribir en `main`.
 - La skill es local al repositorio y vive en `.agents/skills/finish-pr-review/SKILL.md`.
 
@@ -80,17 +84,21 @@ The body must state, in this order:
 1. the target: leave the current PR ready for closure/merge without performing
    approval, merge, or close;
 2. the start gate: identify the open PR and its head branch, confirm the
-   current branch is that head branch and is not `main`, and create one Goal
-   using `create_goal`;
+   current branch is that head branch and is not `main`, validate the PR owner,
+   repository and ref against the local remote, record the baseline before
+   `create_goal`, and create one Goal using `create_goal`;
 3. the loop: inspect PR comments/review threads and required checks with `gh`,
-   fix pipeline failures and valid comments, answer rejected comments with
-   evidence, run relevant checks, commit scoped changes, push only the PR head,
-   then re-read CI and reviewer state;
+   including a paginated `pullRequest.reviewThreads` query that reads
+   `isResolved`, fix pipeline failures and valid comments, answer rejected
+   comments with evidence, run relevant checks, commit only changes absent from
+   the baseline, push only the PR head, then re-read CI and reviewer state;
 4. the wait rule: pending checks or a review expected after a push keep the Goal
    active;
-5. the completion predicate: all required checks green, every actionable
-   comment corrected or rejected with a documented evidence-based response, and
-   reviewers/CodeRabbit indicate no further review is pending;
+5. the completion predicate: all required checks green for the tested
+   `headRefOid`, no actionable unresolved review thread, every other actionable
+   comment corrected or rejected with a documented evidence-based response,
+   the current `headRefOid` still equals the tested SHA, and reviewers/CodeRabbit
+   indicate no further review is pending;
 6. the Goal close operation: call `update_goal({ status: "complete" })` only
    after the full predicate is true.
 
@@ -123,7 +131,12 @@ Run a PowerShell assertion script that reads the file and fails unless these
 strings are present: `name: finish-pr-review`,
 `disable-model-invocation: true`, `create_goal`, `get_goal`, `update_goal`,
 `gh pr approve`, `gh pr merge`, `gh pr close`, `main`, `CodeRabbit`, `pending`,
-and `status: "complete"`.
+`head branch`, `headRefOid`, `reviewThreads`, `isResolved`, `baseline`,
+`remote`, and `status: "complete"`. Add negative assertions that no line
+starting as an executable command invokes `gh pr approve`, `gh pr merge`, or
+`gh pr close`; prose mentioning these guards must remain allowed. Assert also
+that the skill text contains the Goal-scoped change rule, the unresolved-thread
+condition, the head-branch binding, and the tested-head condition.
 
 - [ ] **Step 2: Check format and scope**
 
