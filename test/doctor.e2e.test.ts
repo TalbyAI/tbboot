@@ -24,6 +24,7 @@ import {
 	materializeGitSource,
 	resolveGitSelector,
 } from "../src/git.ts";
+import { runInstall } from "../src/install.ts";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -2276,6 +2277,52 @@ test("unauthorized optional Custom Steps produce a warning and no process", asyn
 	}
 });
 
+test("optional Custom preparation failures remain warnings", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "optional-custom"), {
+			recursive: true,
+		});
+		await writeFile(
+			join(fixture.sourceRoot, "optional-custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    optional: true",
+				"    check:",
+				"      runtime: node",
+				"      script: missing.js",
+				"",
+			].join("\n"),
+		);
+		const { result, envelope } = await runDoctor(fixture);
+		assert.equal(result.exitCode, 0);
+		assert.equal(envelope.status, "warning");
+		assert.equal(envelope.diagnostics[0]?.severity, "warning");
+		assert.equal(envelope.diagnostics[0]?.code, "custom-script-missing");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("pre-aborted install does not apply the plan", async () => {
+	const fixture = await createFixture();
+	try {
+		const target = join(fixture.consumerRoot, "generated", "hello.txt");
+		await rm(target);
+		const result = await runInstall(fixture.consumerRoot, {
+			dryRun: false,
+			force: false,
+			signal: AbortSignal.abort(),
+		});
+		assert.equal(result.exitCode, 130);
+		assert.equal(existsSync(target), false);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("runs an authorized inline Custom lifecycle and uninstalls its effect", async () => {
 	const fixture = await createFixture();
 	try {
@@ -2438,6 +2485,54 @@ test("uninstall preserves Custom effects without an uninstall handler", async ()
 		) as { effects: Array<{ type: string }> };
 		assert.equal(
 			state.effects.some(({ type }) => type === "custom"),
+			true,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall reports unsupported built-in effects instead of hiding them", async () => {
+	const fixture = await createFixture();
+	try {
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			status: string;
+			diagnostics: Array<{ code: string; severity: string }>;
+		}>(uninstall.stdout);
+		assert.equal(envelope.status, "warning");
+		assert.ok(
+			envelope.diagnostics.some(
+				({ code, severity }) =>
+					code === "uninstall-unsupported" && severity === "warning",
+			),
+		);
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ type: string }> };
+		assert.equal(
+			state.effects.some(({ type }) => type === "file"),
 			true,
 		);
 	} finally {

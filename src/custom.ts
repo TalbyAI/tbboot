@@ -400,6 +400,11 @@ function validateResult(value: unknown): CustomResult {
 			message: "Handler result changed must be boolean",
 		});
 	}
+	if (result.message !== undefined && typeof result.message !== "string") {
+		throw runnerError("invalid-result", {
+			message: "Handler result message must be a string",
+		});
+	}
 	return result as CustomResult;
 }
 
@@ -560,7 +565,7 @@ async function scriptPath(
 	if (
 		isAbsolute(script) ||
 		/^[A-Za-z]:[\\/]/.test(script) ||
-		script.includes("://")
+		/^[A-Za-z][A-Za-z0-9+.-]*:/.test(script)
 	) {
 		throw runnerError("custom-script-invalid", {
 			message: "Custom script must be a relative local path",
@@ -671,8 +676,10 @@ function profileRoot(options: CustomAuthorizationOptions): string | undefined {
 }
 
 function sourceKey(source: SourceReference, sourceRoot: string): string {
+	const pathKey = (value: string): string =>
+		process.platform === "win32" ? value.toLowerCase() : value;
 	return source.provider === "local"
-		? `local:${sourceRoot.toLowerCase()}`
+		? `local:${pathKey(sourceRoot)}`
 		: `git:${source.locator.repository.toLowerCase()}/${source.locator.path ?? ""}`;
 }
 

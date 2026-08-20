@@ -381,6 +381,9 @@ async function applyInstallPlan(
 		}
 		return finish(envelope);
 	}
+	if (options.signal?.aborted) {
+		return { ...finish(envelope), exitCode: 130 };
+	}
 	if (plan.lockfile !== undefined && plan.lockfileChanged) {
 		try {
 			envelope.changed =
@@ -410,6 +413,10 @@ async function applyInstallPlan(
 	let cancelled = false;
 	let stopped = false;
 	for (const action of plan.actions) {
+		if (options.signal?.aborted) {
+			cancelled = true;
+			break;
+		}
 		if (stopped) break;
 		if (action.type === "custom") {
 			const custom = customByAction.get(action);
@@ -642,9 +649,20 @@ async function applyUninstallPlan(
 		envelope.diagnostics.some(({ severity }) => severity === "error")
 	)
 		return finish(envelope);
+	if (options.signal?.aborted) {
+		return { ...finish(envelope), exitCode: 130 };
+	}
 	const effects = new Map(
 		state.effects.map((effect) => [stateKey(effect), effect]),
 	);
+	for (const effect of state.effects) {
+		if (effect.type === "custom") continue;
+		envelope.diagnostics.push({
+			code: "uninstall-unsupported",
+			severity: "warning",
+			message: `Uninstall does not remove ${effect.type} effects; the effect was preserved`,
+		});
+	}
 	const customByKey = new Map(
 		plan.customSteps.map((custom) => [
 			stateKey({

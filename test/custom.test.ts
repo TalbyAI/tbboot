@@ -183,4 +183,35 @@ test("rejects Custom scripts that escape the Source root", async () => {
 			"code" in error &&
 			error.code === "custom-script-missing",
 	);
+	await assert.rejects(
+		prepareCustomStep(
+			{
+				type: "custom",
+				check: {
+					runtime: "node",
+					script: "data:text/javascript,return%20{}",
+				},
+			},
+			context,
+		),
+		(error: unknown) =>
+			error instanceof Error &&
+			"code" in error &&
+			error.code === "custom-script-invalid",
+	);
+});
+
+test("rejects Custom results with a non-string message", async () => {
+	await assert.rejects(
+		runHandler({
+			runtime: "node",
+			content: "return { status: 'ok', changed: false, message: 123 };",
+			request: {},
+			cwd: process.cwd(),
+		}),
+		(error: unknown) =>
+			error instanceof Error &&
+			"code" in error &&
+			error.code === "invalid-result",
+	);
 });

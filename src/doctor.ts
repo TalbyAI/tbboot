@@ -486,13 +486,8 @@ async function collectSourceSteps(
 				} catch (error) {
 					const code = customDiagnosticCode(error);
 					const fatal = [
-						"custom-definition-invalid",
-						"custom-runtime-invalid",
-						"custom-runtime-selector",
-						"custom-timeout-invalid",
 						"custom-script-invalid",
 						"custom-script-escape",
-						"custom-script-missing",
 						"trust-invalid",
 						"trust-read",
 					].includes(code);
@@ -1826,11 +1821,16 @@ export async function runDoctor(
 	delete built.envelope.consumerRoot;
 	try {
 		let stderr = "";
-		let cancelled = false;
+		let cancelled = options.signal?.aborted ?? false;
 		if (
+			!cancelled &&
 			!built.envelope.diagnostics.some(({ severity }) => severity === "error")
 		) {
 			for (const descriptor of built.descriptors) {
+				if (options.signal?.aborted) {
+					cancelled = true;
+					break;
+				}
 				if (
 					descriptor.type !== "custom" ||
 					descriptor.preparedCustom === undefined
