@@ -1414,6 +1414,81 @@ test("unlocked Git sources reuse first-pass resolution during lock finalization"
 	}
 });
 
+test("frozen lockfiles validate every convergent Git selector", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	try {
+		const lockedSource = await materializeGitSource(
+			fixture.consumerRoot,
+			{
+				provider: "git",
+				locator: { repository: gitFixture.repo },
+				selector: { from: "v1", to: "v2" },
+			},
+			gitFixture.revisions.base,
+		);
+		const fingerprint = lockedSource.fingerprint;
+		await lockedSource.cleanup();
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      ref: v2",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${gitFixture.repo}`,
+				"    selector:",
+				"      from: v1",
+				"      to: v2",
+				"",
+			].join("\n"),
+		);
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.lock.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - source:",
+				"      provider: git",
+				"      locator:",
+				`        repository: ${gitFixture.repo}`,
+				"      selector:",
+				"        from: v1",
+				"        to: v2",
+				`    revision: ${gitFixture.revisions.base}`,
+				`    fingerprint: ${fingerprint}`,
+				"",
+			].join("\n"),
+		);
+
+		const result = await runGitReadOnlyCommand(fixture, gitFixture.repo, {
+			...commandFor(await installedBin(), [
+				"install",
+				"--dry-run",
+				"--frozen-lockfile",
+				"--json",
+				"--root",
+				fixture.consumerRoot,
+			]),
+			cwd: projectRoot,
+		});
+		assert.equal(result.exitCode, 1);
+		assert.ok(
+			parseJsonOutput<DoctorEnvelope>(result.stdout).diagnostics.some(
+				({ code }) => code === "lockfile-stale",
+			),
+		);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
 test("compatible transitive Git selectors converge independent of discovery order", async () => {
 	const fixture = await createFixture();
 	const gitFixture = await createGitFixture();

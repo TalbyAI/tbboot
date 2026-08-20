@@ -1285,11 +1285,11 @@ async function buildLocalPlan(
 		let useLock =
 			lockEntry !== undefined && lockMode !== "update" && lockSelectorMatches;
 		if (useLock && lockEntry !== undefined) {
-			for (const [index, reference] of node.references.entries()) {
+			for (const reference of node.references) {
 				if (
 					reference.provider === "git" &&
 					reference.selector !== undefined &&
-					(index > 0 || "from" in reference.selector) &&
+					!sameSelector(lockEntry.source.selector, reference.selector) &&
 					!(await isGitRevisionAllowed(
 						repositoryRoot,
 						reference.selector,
