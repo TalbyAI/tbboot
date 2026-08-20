@@ -21,11 +21,13 @@
 ### Task 1: Establish pressure scenarios before authoring
 
 **Files:**
+
 - Read: `AGENTS.md`
 - Read: `docs/superpowers/specs/2026-08-20-finish-pr-review-skill-design.md`
 - No repository files created.
 
 **Interfaces:**
+
 - Consumes: the approved design and current repository guardrails.
 - Produces: four fresh baseline observations from a subagent without the new skill.
 
@@ -52,9 +54,11 @@ observed premature-stop or unsafe-action pattern is named.
 ### Task 2: Write the local user-invoked skill
 
 **Files:**
+
 - Create: `.agents/skills/finish-pr-review/SKILL.md`
 
 **Interfaces:**
+
 - Consumes: the approved design and Task 1 observations.
 - Produces: a self-contained skill with frontmatter, start gate, review loop,
   Goal lifecycle, completion predicate, and push guardrails.
@@ -103,10 +107,12 @@ external dependency, and contains every design requirement exactly once.
 ### Task 3: Verify the skill contract
 
 **Files:**
+
 - Read: `.agents/skills/finish-pr-review/SKILL.md`
 - No additional repository files.
 
 **Interfaces:**
+
 - Consumes: the skill from Task 2.
 - Produces: command evidence for frontmatter, required safeguards, and document
   hygiene.
@@ -131,10 +137,12 @@ unrelated file or formatting error.
 ### Task 4: Re-run pressure scenarios and commit
 
 **Files:**
+
 - Read: `.agents/skills/finish-pr-review/SKILL.md`
 - Commit: `.agents/skills/finish-pr-review/SKILL.md`
 
 **Interfaces:**
+
 - Consumes: the verified skill and the same four scenarios from Task 1.
 - Produces: compliance observations and one local commit; no remote push.
 
