@@ -112,6 +112,7 @@ export type CustomAuthorizationOptions = {
 	allowCustom?: string[];
 	profileRoot?: string;
 	interactive?: boolean;
+	persistTrust?: boolean;
 	cache?: Map<string, boolean>;
 };
 
@@ -825,6 +826,13 @@ async function authorized(
 		options.cache?.set(key, true);
 		return;
 	}
+	if (
+		context.source.provider === "git" &&
+		(context.revision === undefined || context.revision.length === 0)
+	)
+		throw runnerError("custom-source-revision-missing", {
+			message: "Git Source authorization requires a resolved revision",
+		});
 	const trust = await readTrust(options);
 	const entry = trust.sources.find((candidate) => {
 		const same =
@@ -858,7 +866,7 @@ async function authorized(
 						? { revision: context.revision as string }
 						: { fingerprint: context.sourceFingerprint }),
 				});
-				await saveTrust(options, trust);
+				if (options.persistTrust !== false) await saveTrust(options, trust);
 				options.cache?.set(key, true);
 				return;
 			}
