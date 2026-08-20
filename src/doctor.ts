@@ -809,7 +809,6 @@ type SourceDeclaration = {
 	selectorPath?: string;
 	scope: string;
 	source?: string;
-	manifestIndex?: number;
 	lockPath?: string;
 };
 
@@ -825,7 +824,6 @@ type ResolvedSource = {
 	dependencies: ResolvedSource[];
 	declarations: SourceDeclaration[];
 	sourceDocument?: SourceDocument;
-	sourceDocumentRead: boolean;
 	expandedRevision?: string;
 	invalid?: boolean;
 };
@@ -918,31 +916,19 @@ function sameSelector(left: unknown, right: unknown): boolean {
 		value !== null &&
 		!Array.isArray(value) &&
 		Object.keys(value).length === 0;
-	if (left === undefined || right === undefined) {
-		return (
-			left === right ||
-			(left === undefined && isEmptySelector(right)) ||
-			(right === undefined && isEmptySelector(left))
-		);
-	}
+	const other = left === undefined ? right : left;
+	const leftEmpty = left === undefined || isEmptySelector(left);
+	const rightEmpty = right === undefined || isEmptySelector(right);
+	if (leftEmpty || rightEmpty) return leftEmpty && rightEmpty;
 	if (
-		typeof left !== "object" ||
-		left === null ||
+		typeof other !== "object" ||
+		other === null ||
 		typeof right !== "object" ||
 		right === null
 	)
 		return false;
-	const leftSelector = left as Record<string, unknown>;
+	const leftSelector = other as Record<string, unknown>;
 	const rightSelector = right as Record<string, unknown>;
-	if (
-		Object.keys(leftSelector).length === 0 ||
-		Object.keys(rightSelector).length === 0
-	) {
-		return (
-			Object.keys(leftSelector).length === 0 &&
-			Object.keys(rightSelector).length === 0
-		);
-	}
 	if ("ref" in leftSelector || "ref" in rightSelector) {
 		return (
 			"ref" in leftSelector &&
@@ -1004,11 +990,7 @@ function lockDiagnostic(
 ): Diagnostic {
 	return diagnostic(code, message, {
 		document: "tbboot.lock.yaml",
-		path:
-			declaration.lockPath ??
-			(declaration.manifestIndex === undefined
-				? declaration.path
-				: `/sources/${declaration.manifestIndex}`),
+		path: declaration.lockPath ?? declaration.path,
 		source:
 			declaration.reference.provider === "git"
 				? declaration.reference.locator.repository
@@ -1171,7 +1153,6 @@ async function buildLocalPlan(
 				identity: normalized.identity,
 				dependencies: [],
 				declarations: [declaration],
-				sourceDocumentRead: false,
 			};
 			nodes.set(node.identity, node);
 			enqueue(node);
@@ -1425,7 +1406,6 @@ async function buildLocalPlan(
 				path: `/sources/${index}/locator${reference.provider === "git" && reference.locator.path === undefined ? "" : "/path"}`,
 				selectorPath: `/sources/${index}/selector`,
 				scope: "manifest",
-				manifestIndex: index,
 				lockPath: `/sources/${index}`,
 			});
 			if (node !== undefined && !roots.includes(node)) roots.push(node);
@@ -1438,15 +1418,12 @@ async function buildLocalPlan(
 			if (revision === undefined) {
 				node.dependencies = [];
 				node.sourceDocument = undefined;
-				node.sourceDocumentRead = false;
 				node.expandedRevision = undefined;
 				continue;
 			}
-			if (node.sourceDocumentRead && node.expandedRevision === revision)
-				continue;
+			if (node.expandedRevision === revision) continue;
 			node.dependencies = [];
 			node.sourceDocument = undefined;
-			node.sourceDocumentRead = true;
 			node.expandedRevision = revision;
 			if (node.sourceRoot === undefined) {
 				node.invalid = true;
@@ -1584,7 +1561,6 @@ async function buildLocalPlan(
 			if (
 				node.invalid ||
 				node.sourceRoot === undefined ||
-				!node.sourceDocumentRead ||
 				node.sourceDocument === undefined
 			)
 				continue;

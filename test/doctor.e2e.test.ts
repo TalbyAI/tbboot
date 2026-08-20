@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import {
 	mkdir,
 	mkdtemp,
@@ -7,7 +8,6 @@ import {
 	realpath,
 	rename,
 	rm,
-	stat,
 	symlink,
 	writeFile,
 } from "node:fs/promises";
@@ -150,16 +150,6 @@ async function runWritableCli(
 		},
 		...options,
 	});
-}
-
-async function statIfExists(path: string): Promise<boolean> {
-	try {
-		await stat(path);
-		return true;
-	} catch (error) {
-		if (errorCode(error) === "ENOENT") return false;
-		throw error;
-	}
 }
 
 test.after(async () => {
@@ -541,16 +531,13 @@ test("Source dependency cycles fail preflight without writing artifacts", async 
 		);
 		assert.ok(cycle);
 		assert.match(cycle.message, /cycle-first.*cycle-second.*cycle-first/);
+		assert.equal(existsSync(join(fixture.consumerRoot, "generated")), true);
 		assert.equal(
-			await statIfExists(join(fixture.consumerRoot, "generated")),
-			true,
-		);
-		assert.equal(
-			await statIfExists(join(fixture.consumerRoot, "generated", "cycle.txt")),
+			existsSync(join(fixture.consumerRoot, "generated", "cycle.txt")),
 			false,
 		);
 		assert.equal(
-			await statIfExists(join(fixture.consumerRoot, ".tbboot", "state.yaml")),
+			existsSync(join(fixture.consumerRoot, ".tbboot", "state.yaml")),
 			false,
 		);
 	} finally {
@@ -621,9 +608,7 @@ test("same-level duplicate and incompatible Source dependencies fail preflight",
 			),
 		);
 		assert.equal(
-			await statIfExists(
-				join(fixture.consumerRoot, "generated", "dependency.txt"),
-			),
+			existsSync(join(fixture.consumerRoot, "generated", "dependency.txt")),
 			false,
 		);
 
@@ -662,7 +647,7 @@ test("same-level duplicate and incompatible Source dependencies fail preflight",
 			),
 		);
 		assert.equal(
-			await statIfExists(join(fixture.consumerRoot, "tbboot.lock.yaml")),
+			existsSync(join(fixture.consumerRoot, "tbboot.lock.yaml")),
 			false,
 		);
 	} finally {
