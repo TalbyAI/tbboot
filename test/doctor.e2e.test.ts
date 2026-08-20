@@ -2257,7 +2257,7 @@ test("missing input is a conflict and optional missing input is a warning", asyn
 	}
 });
 
-test("unsupported Custom Steps produce no action and follow optionality", async () => {
+test("unauthorized optional Custom Steps produce a warning and no process", async () => {
 	const fixture = await createFixture();
 	try {
 		await writeRecipe(fixture.sourceRoot, "custom", [
@@ -2266,11 +2266,154 @@ test("unsupported Custom Steps produce no action and follow optionality", async 
 		const { result, envelope } = await runDoctor(fixture);
 		assert.equal(result.exitCode, 0);
 		assert.equal(envelope.status, "warning");
-		assert.equal(envelope.actions.length, 1);
+		assert.equal(envelope.actions.length, 2);
 		const lastDiagnostic = envelope.diagnostics.at(-1);
 		assert.ok(lastDiagnostic);
-		assert.equal(lastDiagnostic.code, "unsupported-step");
+		assert.equal(lastDiagnostic.code, "custom-authorization-required");
 		assert.equal(lastDiagnostic.severity, "warning");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("runs an authorized inline Custom lifecycle and uninstalls its effect", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: |",
+				"        const { access } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        try { await access(join(request.consumerRoot, 'custom.txt')); return { status: 'ok', changed: false }; }",
+				"        catch { return { status: 'missing', changed: false }; }",
+				"    install:",
+				"      runtime: node",
+				"      content: |",
+				"        const { writeFile } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await writeFile(join(request.consumerRoot, 'custom.txt'), 'custom\\n');",
+				"        return { status: 'ok', changed: true };",
+				"    uninstall:",
+				"      runtime: node",
+				"      content: |",
+				"        const { rm } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await rm(join(request.consumerRoot, 'custom.txt'), { force: true });",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		assert.equal(install.stderr, "");
+		const installed = parseJsonOutput<{
+			actions: Array<{ type: string; state: string }>;
+			changed: boolean;
+		}>(install.stdout);
+		assert.equal(installed.changed, true);
+		assert.ok(
+			installed.actions.some(
+				({ type, state }) => type === "custom" && state === "ok",
+			),
+		);
+		assert.equal(
+			await readFile(join(fixture.consumerRoot, "custom.txt"), "utf8"),
+			"custom\n",
+		);
+
+		const doctor = await runDoctor(
+			fixture,
+			"--allow-custom",
+			fixture.sourceRoot,
+		);
+		assert.equal(doctor.result.exitCode, 0);
+		assert.ok(
+			doctor.envelope.actions.some(
+				({ type, state }) => type === "custom" && state === "ok",
+			),
+		);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		assert.equal(uninstall.stderr, "");
+		assert.equal(existsSync(join(fixture.consumerRoot, "custom.txt")), false);
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ type: string }> };
+		assert.equal(
+			state.effects.some(({ type }) => type === "custom"),
+			false,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install dry-run defers authorized Custom processes", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "custom", [{ type: "custom" }]);
+		const before = await snapshotTree(
+			fixture.consumerRoot,
+			fixture.profileRoot,
+		);
+		const result = await runCli(fixture, [
+			"install",
+			"--dry-run",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stderr, "");
+		const envelope = parseJsonOutput<{
+			changed: boolean;
+			actions: Array<{ type: string; state: string }>;
+			diagnostics: Array<{ code: string }>;
+		}>(result.stdout);
+		assert.equal(envelope.changed, false);
+		assert.ok(
+			envelope.actions.some(
+				({ type, state }) => type === "custom" && state === "deferred",
+			),
+		);
+		assert.ok(
+			envelope.diagnostics.some(({ code }) => code === "custom-check-deferred"),
+		);
+		assert.deepEqual(
+			await snapshotTree(fixture.consumerRoot, fixture.profileRoot),
+			before,
+		);
 	} finally {
 		await fixture.cleanup();
 	}

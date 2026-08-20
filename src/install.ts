@@ -3,12 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { stringify } from "yaml";
 import type {
+	CustomStateEffect,
 	Diagnostic,
 	LockfileDocument,
 	StateDocument,
 	StateEffect,
 } from "./contract.ts";
 import { validateDocument } from "./contract.ts";
+import { isCancellation, runPreparedOperation } from "./custom.ts";
 import {
 	type ArtifactAction,
 	type LocalInstallPlan,
@@ -34,7 +36,40 @@ export type InstallEnvelope = {
 
 export type InstallResult = {
 	envelope: InstallEnvelope;
-	exitCode: 0 | 1;
+	exitCode: 0 | 1 | 130;
+	stderr?: string;
+};
+
+export type InstallOptions = {
+	dryRun: boolean;
+	force: boolean;
+	updateLock?: boolean;
+	frozenLockfile?: boolean;
+	allowCustom?: string[];
+	profileRoot?: string;
+	signal?: AbortSignal;
+};
+
+export type UninstallEnvelope = {
+	schemaVersion: 1;
+	command: "uninstall";
+	status: "ok" | "warning" | "error";
+	changed: boolean;
+	actions: ArtifactAction[];
+	diagnostics: Diagnostic[];
+};
+
+export type UninstallResult = {
+	envelope: UninstallEnvelope;
+	exitCode: 0 | 1 | 130;
+	stderr?: string;
+};
+
+export type UninstallOptions = {
+	force?: boolean;
+	allowCustom?: string[];
+	profileRoot?: string;
+	signal?: AbortSignal;
 };
 
 function envelopeFromPlan(plan: LocalInstallPlan): InstallEnvelope {
@@ -96,17 +131,17 @@ function replaceFragment(
 }
 
 function stateKey(
-	effect: Pick<
-		StateEffect,
-		"source" | "recipe" | "step" | "type" | "target"
-	> & { marker?: string },
+	effect: Pick<StateEffect, "source" | "recipe" | "step" | "type"> & {
+		target?: string;
+		marker?: string;
+	},
 ): string {
 	return JSON.stringify([
 		effect.source,
 		effect.recipe,
 		effect.step,
 		effect.type,
-		effect.target,
+		"target" in effect ? effect.target : "",
 		effect.marker ?? "",
 	]);
 }
@@ -192,6 +227,20 @@ function effectFor(
 		target,
 		marker: artifact.marker as string,
 		artifactFingerprint: sha256(content),
+	};
+}
+
+function customEffect(
+	step: LocalInstallPlan["customSteps"][number],
+): CustomStateEffect {
+	return {
+		source: step.source,
+		...(step.revision === undefined ? {} : { revision: step.revision }),
+		sourceFingerprint: step.prepared.context.sourceFingerprint,
+		recipe: step.recipe,
+		step: step.step,
+		type: "custom",
+		uninstallSupported: step.prepared.uninstallSupported,
 	};
 }
 
@@ -285,19 +334,29 @@ async function applyArtifact(
 
 export async function runInstall(
 	root: string,
-	options: {
-		dryRun: boolean;
-		force: boolean;
-		updateLock?: boolean;
-		frozenLockfile?: boolean;
-	},
+	options: InstallOptions,
 ): Promise<InstallResult> {
 	const lockMode = options.frozenLockfile
 		? "frozen"
 		: options.updateLock
 			? "update"
 			: "normal";
-	const plan = await planLocalInstall(root, options.force, lockMode);
+	const plan = await planLocalInstall(root, options.force, lockMode, {
+		allowCustom: options.allowCustom,
+		profileRoot: options.profileRoot,
+		interactive: !options.dryRun && process.stdin.isTTY && process.stdout.isTTY,
+	});
+	try {
+		return await applyInstallPlan(plan, options);
+	} finally {
+		await plan.cleanup?.();
+	}
+}
+
+async function applyInstallPlan(
+	plan: LocalInstallPlan,
+	options: InstallOptions,
+): Promise<InstallResult> {
 	const envelope = envelopeFromPlan(plan);
 	const state = await readState(plan.consumerRoot, envelope.diagnostics);
 	if (
@@ -306,7 +365,20 @@ export async function runInstall(
 	) {
 		return finish(envelope);
 	}
-	if (options.dryRun) return finish(envelope);
+	if (options.dryRun) {
+		for (const custom of plan.customSteps) {
+			envelope.diagnostics.push({
+				code: "custom-check-deferred",
+				severity: "warning",
+				message:
+					"Custom check and lifecycle actions are deferred during dry-run",
+				source: custom.sourceRoot,
+				recipe: custom.recipe,
+				step: custom.step,
+			});
+		}
+		return finish(envelope);
+	}
 	if (plan.lockfile !== undefined && plan.lockfileChanged) {
 		try {
 			envelope.changed =
@@ -326,8 +398,127 @@ export async function runInstall(
 		state.effects.map((effect) => [stateKey(effect), effect]),
 	);
 	const workingTargets = new Map<string, Buffer | undefined>();
-	for (const artifact of plan.artifacts) {
-		if (artifact.action.state === "drift" && !options.force) continue;
+	const artifactsByAction = new Map(
+		plan.artifacts.map((artifact) => [artifact.action, artifact]),
+	);
+	const customByAction = new Map(
+		plan.customSteps.map((custom) => [custom.action, custom]),
+	);
+	let stderr = "";
+	let cancelled = false;
+	let stopped = false;
+	for (const action of plan.actions) {
+		if (stopped) break;
+		if (action.type === "custom") {
+			const custom = customByAction.get(action);
+			if (custom === undefined) continue;
+			const report = (
+				status: "missing" | "drift" | "error",
+				message: string,
+			): boolean => {
+				action.state = status;
+				envelope.diagnostics.push({
+					code:
+						status === "missing"
+							? "custom-missing"
+							: status === "drift"
+								? "custom-drift"
+								: "custom-error",
+					severity: custom.optional ? "warning" : "error",
+					message,
+					source: custom.sourceRoot,
+					recipe: custom.recipe,
+					step: custom.step,
+				});
+				return !custom.optional;
+			};
+			try {
+				const run = async (
+					operation: typeof custom.prepared.check,
+				): Promise<{ failed: boolean; fatal: boolean }> => {
+					const outcome = await runPreparedOperation(
+						operation,
+						custom.prepared.context,
+						options.signal,
+					);
+					stderr += outcome.stderr;
+					if (outcome.result.changed) envelope.changed = true;
+					if (outcome.result.status !== "ok") {
+						return {
+							failed: true,
+							fatal: report(
+								outcome.result.status,
+								outcome.result.message ??
+									`Custom ${operation.name} returned ${outcome.result.status}`,
+							),
+						};
+					}
+					return { failed: false, fatal: false };
+				};
+				if (custom.prepared.install !== undefined) {
+					const installation = await run(custom.prepared.install);
+					if (installation.failed) {
+						stopped ||= installation.fatal;
+						continue;
+					}
+				}
+				const check = await run(custom.prepared.check);
+				if (check.failed) {
+					stopped ||= check.fatal;
+					continue;
+				}
+				action.state = "ok";
+				const existing = effects.get(
+					stateKey({
+						source: custom.source,
+						recipe: custom.recipe,
+						step: custom.step,
+						type: "custom",
+					}),
+				);
+				const effect = customEffect(custom);
+				if (!sameEffect(existing, effect)) {
+					effects.set(stateKey(effect), effect);
+					envelope.changed =
+						(await persistState(plan.consumerRoot, {
+							schemaVersion: 1,
+							effects: [...effects.values()],
+						})) || envelope.changed;
+				}
+			} catch (error) {
+				stderr +=
+					typeof (error as { stderr?: unknown }).stderr === "string"
+						? (error as { stderr: string }).stderr
+						: "";
+				if (isCancellation(error)) {
+					cancelled = true;
+					stopped = true;
+					envelope.diagnostics.push({
+						code: "custom-cancelled",
+						severity: "error",
+						message: "Custom execution was cancelled",
+						source: custom.sourceRoot,
+						recipe: custom.recipe,
+						step: custom.step,
+					});
+					continue;
+				}
+				if (
+					report(
+						"error",
+						error instanceof Error ? error.message : "Custom execution failed",
+					)
+				)
+					stopped = true;
+			}
+			continue;
+		}
+		const artifact = artifactsByAction.get(action);
+		if (
+			artifact === undefined ||
+			(artifact.action.state === "drift" && !options.force)
+		)
+			continue;
 		try {
 			const existing = effects.get(
 				stateKey({
@@ -383,7 +574,8 @@ export async function runInstall(
 	if (
 		plan.artifacts.some(
 			({ action }) => action.state !== "drift" || options.force,
-		)
+		) ||
+		plan.customSteps.some(({ action }) => action.state === "ok")
 	) {
 		try {
 			envelope.changed =
@@ -399,5 +591,147 @@ export async function runInstall(
 			);
 		}
 	}
-	return finish(envelope);
+	const result = finish(envelope);
+	return {
+		...result,
+		...(stderr === "" ? {} : { stderr }),
+		exitCode: cancelled ? 130 : result.exitCode,
+	};
+}
+
+export async function runUninstall(
+	root: string,
+	options: UninstallOptions,
+): Promise<UninstallResult> {
+	const plan = await planLocalInstall(root, true, "none", {
+		allowCustom: options.allowCustom,
+		profileRoot: options.profileRoot,
+		interactive: process.stdin.isTTY && process.stdout.isTTY,
+	});
+	try {
+		return await applyUninstallPlan(plan, options);
+	} finally {
+		await plan.cleanup?.();
+	}
+}
+
+async function applyUninstallPlan(
+	plan: LocalInstallPlan,
+	options: UninstallOptions,
+): Promise<UninstallResult> {
+	const envelope: UninstallEnvelope = {
+		schemaVersion: 1,
+		command: "uninstall",
+		status: "ok",
+		changed: false,
+		actions: plan.actions.filter(({ type }) => type === "custom"),
+		diagnostics: plan.diagnostics,
+	};
+	const state = await readState(plan.consumerRoot, envelope.diagnostics);
+	if (
+		state === undefined ||
+		envelope.diagnostics.some(({ severity }) => severity === "error")
+	)
+		return finish(envelope);
+	const effects = new Map(
+		state.effects.map((effect) => [stateKey(effect), effect]),
+	);
+	const customByKey = new Map(
+		plan.customSteps.map((custom) => [
+			stateKey({
+				source: custom.source,
+				recipe: custom.recipe,
+				step: custom.step,
+				type: "custom",
+			}),
+			custom,
+		]),
+	);
+	let stderr = "";
+	let cancelled = false;
+	for (const effect of [...state.effects].reverse()) {
+		if (effect.type !== "custom") continue;
+		const custom = customByKey.get(stateKey(effect));
+		if (custom === undefined) continue;
+		if (custom.prepared.uninstall === undefined) {
+			envelope.diagnostics.push({
+				code: "uninstall-unsupported",
+				severity: "warning",
+				message: "Custom step does not declare an uninstall operation",
+				source: custom.sourceRoot,
+				recipe: custom.recipe,
+				step: custom.step,
+			});
+			continue;
+		}
+		try {
+			const outcome = await runPreparedOperation(
+				custom.prepared.uninstall,
+				custom.prepared.context,
+				options.signal,
+			);
+			stderr += outcome.stderr;
+			if (outcome.result.changed) envelope.changed = true;
+			custom.action.state =
+				outcome.result.status === "ok" ? "ok" : outcome.result.status;
+			if (outcome.result.status === "ok") {
+				effects.delete(stateKey(effect));
+				envelope.changed =
+					(await persistState(plan.consumerRoot, {
+						schemaVersion: 1,
+						effects: [...effects.values()],
+					})) || envelope.changed;
+				continue;
+			}
+			envelope.diagnostics.push({
+				code:
+					outcome.result.status === "missing"
+						? "custom-missing"
+						: outcome.result.status === "drift"
+							? "custom-drift"
+							: "custom-error",
+				severity: custom.optional ? "warning" : "error",
+				message:
+					outcome.result.message ??
+					`Custom uninstall returned ${outcome.result.status}`,
+				source: custom.sourceRoot,
+				recipe: custom.recipe,
+				step: custom.step,
+			});
+			if (!custom.optional) break;
+		} catch (error) {
+			stderr +=
+				typeof (error as { stderr?: unknown }).stderr === "string"
+					? (error as { stderr: string }).stderr
+					: "";
+			if (isCancellation(error)) {
+				cancelled = true;
+				envelope.diagnostics.push({
+					code: "custom-cancelled",
+					severity: "error",
+					message: "Custom uninstall was cancelled",
+					source: custom.sourceRoot,
+					recipe: custom.recipe,
+					step: custom.step,
+				});
+				break;
+			}
+			envelope.diagnostics.push({
+				code: "custom-error",
+				severity: custom.optional ? "warning" : "error",
+				message:
+					error instanceof Error ? error.message : "Custom uninstall failed",
+				source: custom.sourceRoot,
+				recipe: custom.recipe,
+				step: custom.step,
+			});
+			if (!custom.optional) break;
+		}
+	}
+	const result = finish(envelope);
+	return {
+		...result,
+		...(stderr === "" ? {} : { stderr }),
+		exitCode: cancelled ? 130 : result.exitCode,
+	};
 }

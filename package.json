@@ -18,7 +18,7 @@
     "fix": "npm run fix:md && npm run fix:code",
     "build": "node --check src/cli.ts",
     "doctor": "node src/cli.ts doctor",
-    "test": "node --test test/doctor.e2e.test.ts test/support.test.ts",
+    "test": "node --test test/doctor.e2e.test.ts test/custom.test.ts test/support.test.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {

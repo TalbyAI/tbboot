@@ -7,18 +7,19 @@ import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import type { DoctorEnvelope } from "./doctor.ts";
 import { runDoctor } from "./doctor.ts";
 import type { InstallEnvelope } from "./install.ts";
-import { runInstall } from "./install.ts";
+import { runInstall, runUninstall, type UninstallEnvelope } from "./install.ts";
 
 const usage = [
-	"usage: tbboot doctor [--root <consumer-root>] [--json]",
-	"usage: tbboot install [--root <consumer-root>] [--dry-run] [--force] [--update-lock|--frozen-lockfile] [--json]",
+	"usage: tbboot doctor [--root <consumer-root>] [--allow-custom <source>] [--json]",
+	"usage: tbboot install [--root <consumer-root>] [--dry-run] [--force] [--allow-custom <source>] [--update-lock|--frozen-lockfile] [--json]",
+	"usage: tbboot uninstall [--root <consumer-root>] [--force] [--allow-custom <source>] [--json]",
 ].join("\n");
 
 type ParseResult =
 	| {
 			ok: true;
 			command: "doctor";
-			options: { root: string; json: boolean };
+			options: { root: string; json: boolean; allowCustom: string[] };
 	  }
 	| {
 			ok: true;
@@ -30,13 +31,31 @@ type ParseResult =
 				force: boolean;
 				updateLock: boolean;
 				frozenLockfile: boolean;
+				allowCustom: string[];
+			};
+	  }
+	| {
+			ok: true;
+			command: "uninstall";
+			options: {
+				root: string;
+				json: boolean;
+				force: boolean;
+				allowCustom: string[];
 			};
 	  }
 	| { ok: false; message: string };
 
 function parseCommandLine(argv: string[], cwd: string): ParseResult {
-	if (argv[0] !== "doctor" && argv[0] !== "install") {
-		return { ok: false, message: "Expected the doctor or install command" };
+	if (
+		argv[0] !== "doctor" &&
+		argv[0] !== "install" &&
+		argv[0] !== "uninstall"
+	) {
+		return {
+			ok: false,
+			message: "Expected the doctor, install, or uninstall command",
+		};
 	}
 	const command = argv[0];
 	const args = argv.slice(1);
@@ -54,17 +73,23 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 		args.splice(dashedRoot, 2, `--root=${args[dashedRoot + 1]}`);
 	}
 	try {
-		const cliOptions: ParseArgsOptionsConfig =
-			command === "doctor"
-				? { root: { type: "string" }, json: { type: "boolean" } }
+		const cliOptions: ParseArgsOptionsConfig = {
+			root: { type: "string" },
+			json: { type: "boolean" },
+			"allow-custom": { type: "string", multiple: true },
+			...(command === "doctor"
+				? {}
 				: {
-						root: { type: "string" },
-						json: { type: "boolean" },
-						"dry-run": { type: "boolean" },
 						force: { type: "boolean" },
-						"update-lock": { type: "boolean" },
-						"frozen-lockfile": { type: "boolean" },
-					};
+						...(command === "install"
+							? {
+									"dry-run": { type: "boolean" },
+									"update-lock": { type: "boolean" },
+									"frozen-lockfile": { type: "boolean" },
+								}
+							: {}),
+					}),
+		};
 		const { values, tokens = [] } = parseArgs({
 			args,
 			options: cliOptions,
@@ -81,7 +106,7 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 			return { ok: false, message: "--root may only be specified once" };
 		}
 		if (
-			command === "install" &&
+			(command === "install" || command === "uninstall") &&
 			tokens.filter(
 				(token) => token.kind === "option" && token.name === "force",
 			).length > 1
@@ -119,8 +144,23 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 		}
 		const root = resolve(cwd, (values.root as string | undefined) ?? ".");
 		const json = (values.json as boolean | undefined) ?? false;
+		const allowCustom = (
+			(values["allow-custom"] as string[] | undefined) ?? []
+		).map((value) => (value.includes("://") ? value : resolve(cwd, value)));
 		if (command === "doctor") {
-			return { ok: true, command, options: { root, json } };
+			return { ok: true, command, options: { root, json, allowCustom } };
+		}
+		if (command === "uninstall") {
+			return {
+				ok: true,
+				command,
+				options: {
+					root,
+					json,
+					force: (values.force as boolean | undefined) ?? false,
+					allowCustom,
+				},
+			};
 		}
 		return {
 			ok: true,
@@ -133,6 +173,7 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 				updateLock: (values["update-lock"] as boolean | undefined) ?? false,
 				frozenLockfile:
 					(values["frozen-lockfile"] as boolean | undefined) ?? false,
+				allowCustom,
 			},
 		};
 	} catch (error) {
@@ -143,13 +184,13 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 	}
 }
 
-type CommandEnvelope = DoctorEnvelope | InstallEnvelope;
+type CommandEnvelope = DoctorEnvelope | InstallEnvelope | UninstallEnvelope;
 
 function renderHuman(envelope: CommandEnvelope): string {
 	const lines = [`status: ${envelope.status}`];
 	for (const action of envelope.actions) {
 		lines.push(
-			`${action.state}: ${action.type} ${action.target} (${action.source}/${action.recipe} step ${action.step})`,
+			`${action.state}: ${action.type}${action.target === undefined ? "" : ` ${action.target}`} (${action.source}/${action.recipe} step ${action.step})`,
 		);
 	}
 	for (const diagnostic of envelope.diagnostics) {
@@ -177,15 +218,38 @@ export async function main(
 		process.stderr.write(`${command.message}\n${usage}\n`);
 		return 2;
 	}
-	const result =
-		command.command === "doctor"
-			? await runDoctor(command.options.root)
-			: await runInstall(command.options.root, {
-					dryRun: command.options.dryRun,
-					force: command.options.force,
-					updateLock: command.options.updateLock,
-					frozenLockfile: command.options.frozenLockfile,
-				});
+	const controller = new AbortController();
+	const cancel = (): void => controller.abort();
+	process.once("SIGINT", cancel);
+	let result:
+		| Awaited<ReturnType<typeof runDoctor>>
+		| Awaited<ReturnType<typeof runInstall>>
+		| Awaited<ReturnType<typeof runUninstall>>;
+	try {
+		result =
+			command.command === "doctor"
+				? await runDoctor(command.options.root, {
+						allowCustom: command.options.allowCustom,
+						signal: controller.signal,
+					})
+				: command.command === "install"
+					? await runInstall(command.options.root, {
+							dryRun: command.options.dryRun,
+							force: command.options.force,
+							updateLock: command.options.updateLock,
+							frozenLockfile: command.options.frozenLockfile,
+							allowCustom: command.options.allowCustom,
+							signal: controller.signal,
+						})
+					: await runUninstall(command.options.root, {
+							force: command.options.force,
+							allowCustom: command.options.allowCustom,
+							signal: controller.signal,
+						});
+	} finally {
+		process.removeListener("SIGINT", cancel);
+	}
+	if (result.stderr) process.stderr.write(result.stderr);
 	process.stdout.write(
 		command.options.json
 			? `${JSON.stringify(result.envelope)}\n`
