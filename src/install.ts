@@ -10,7 +10,11 @@ import type {
 	StateEffect,
 } from "./contract.ts";
 import { validateDocument } from "./contract.ts";
-import { isCancellation, runPreparedOperation } from "./custom.ts";
+import {
+	isCancellation,
+	type PreparedCustomOperation,
+	runPreparedOperation,
+} from "./custom.ts";
 import {
 	type ArtifactAction,
 	type LocalInstallPlan,
@@ -338,6 +342,19 @@ export async function runInstall(
 	root: string,
 	options: InstallOptions,
 ): Promise<InstallResult> {
+	if (options.signal?.aborted) {
+		return {
+			envelope: {
+				schemaVersion: 1,
+				command: "install",
+				status: "ok",
+				changed: false,
+				actions: [],
+				diagnostics: [],
+			},
+			exitCode: 130,
+		};
+	}
 	const lockMode = options.frozenLockfile
 		? "frozen"
 		: options.updateLock
@@ -444,7 +461,7 @@ async function applyInstallPlan(
 			};
 			try {
 				const run = async (
-					operation: typeof prepared.check,
+					operation: PreparedCustomOperation,
 				): Promise<{ failed: boolean; fatal: boolean }> => {
 					const outcome = await runPreparedOperation(
 						operation,
@@ -471,6 +488,10 @@ async function applyInstallPlan(
 						stopped ||= installation.fatal;
 						continue;
 					}
+				}
+				if (prepared.check === undefined) {
+					stopped = report("error", "Custom check is not prepared");
+					continue;
 				}
 				const check = await run(prepared.check);
 				if (check.failed) {
@@ -613,6 +634,19 @@ export async function runUninstall(
 	root: string,
 	options: UninstallOptions,
 ): Promise<UninstallResult> {
+	if (options.signal?.aborted) {
+		return {
+			envelope: {
+				schemaVersion: 1,
+				command: "uninstall",
+				status: "ok",
+				changed: false,
+				actions: [],
+				diagnostics: [],
+			},
+			exitCode: 130,
+		};
+	}
 	const plan = await planLocalInstall(
 		root,
 		true,
@@ -661,6 +695,12 @@ async function applyUninstallPlan(
 			code: "uninstall-unsupported",
 			severity: "warning",
 			message: `Uninstall does not remove ${effect.type} effects; the effect was preserved`,
+			source:
+				effect.source.provider === "local"
+					? effect.source.locator.path
+					: effect.source.locator.repository,
+			recipe: effect.recipe,
+			step: effect.step,
 		});
 	}
 	const customByKey = new Map(

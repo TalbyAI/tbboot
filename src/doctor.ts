@@ -482,6 +482,7 @@ async function collectSourceSteps(
 							sourceFingerprint: fingerprint,
 						},
 						metadata.customAuthorization,
+						metadata.mode === "uninstall" ? ["uninstall"] : undefined,
 					);
 				} catch (error) {
 					const code = customDiagnosticCode(error);
@@ -490,6 +491,7 @@ async function collectSourceSteps(
 						"custom-script-escape",
 						"trust-invalid",
 						"trust-read",
+						"trust-write",
 					].includes(code);
 					descriptor.action.state = "error";
 					envelope.diagnostics.push(
@@ -749,7 +751,7 @@ async function evaluateDescriptor(
 	force: boolean,
 ): Promise<void> {
 	if (descriptor.collision) return;
-	if (descriptor.type === "custom") return;
+	if (descriptor.type === "custom" || mode === "uninstall") return;
 
 	if (isPathEscape(descriptor.inputPath)) {
 		addStepDiagnostic(
@@ -1813,6 +1815,19 @@ export async function runDoctor(
 		signal?: AbortSignal;
 	} = {},
 ): Promise<DoctorResult> {
+	if (options.signal?.aborted) {
+		return {
+			envelope: {
+				schemaVersion: 1,
+				command: "doctor",
+				status: "ok",
+				changed: false,
+				actions: [],
+				diagnostics: [],
+			},
+			exitCode: 130,
+		};
+	}
 	const built = await buildLocalPlan(root, "doctor", false, "none", {
 		allowCustom: options.allowCustom,
 		profileRoot: options.profileRoot,
@@ -1833,7 +1848,8 @@ export async function runDoctor(
 				}
 				if (
 					descriptor.type !== "custom" ||
-					descriptor.preparedCustom === undefined
+					descriptor.preparedCustom === undefined ||
+					descriptor.preparedCustom.check === undefined
 				)
 					continue;
 				try {

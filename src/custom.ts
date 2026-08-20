@@ -93,11 +93,18 @@ export type PreparedCustomOperation = {
 
 export type PreparedCustomStep = {
 	context: CustomContext;
-	check: PreparedCustomOperation;
+	check?: PreparedCustomOperation;
 	install?: PreparedCustomOperation;
 	uninstall?: PreparedCustomOperation;
 	uninstallSupported: boolean;
 };
+
+type CustomOperationName = PreparedCustomOperation["name"];
+const ALL_CUSTOM_OPERATIONS: readonly CustomOperationName[] = [
+	"check",
+	"install",
+	"uninstall",
+];
 
 export type CustomAuthorizationOptions = {
 	allowCustom?: string[];
@@ -618,6 +625,13 @@ async function prepareOperation(
 			message: "Custom operation must define exactly one script or content",
 		});
 	}
+	const script = hasScript
+		? await scriptPath(
+				context.sourceRoot,
+				context.recipeRoot,
+				operation.script as string,
+			)
+		: undefined;
 	const runtime = operation.runtime;
 	if (runtime !== "node" && runtime !== "pwsh") {
 		throw runnerError("custom-runtime-invalid");
@@ -635,15 +649,9 @@ async function prepareOperation(
 		name,
 		runtime,
 		executable: detected.file as string,
-		...(hasScript
-			? {
-					script: await scriptPath(
-						context.sourceRoot,
-						context.recipeRoot,
-						operation.script as string,
-					),
-				}
-			: { content: operation.content as string }),
+		...(script === undefined
+			? { content: operation.content as string }
+			: { script }),
 		timeoutMs: timeoutMs(name, operation),
 	};
 }
@@ -828,24 +836,24 @@ export async function prepareCustomStep(
 	step: CustomStep,
 	context: CustomContext,
 	authorization: CustomAuthorizationOptions = {},
+	operations: readonly CustomOperationName[] = ALL_CUSTOM_OPERATIONS,
 ): Promise<PreparedCustomStep> {
-	const check = await prepareOperation(
-		"check",
-		step.check as CustomOperation,
-		context,
-	);
+	const selected = new Set(operations);
+	const check = selected.has("check")
+		? await prepareOperation("check", step.check as CustomOperation, context)
+		: undefined;
 	const install =
-		step.install === undefined
+		step.install === undefined || !selected.has("install")
 			? undefined
 			: await prepareOperation("install", step.install, context);
 	const uninstall =
-		step.uninstall === undefined
+		step.uninstall === undefined || !selected.has("uninstall")
 			? undefined
 			: await prepareOperation("uninstall", step.uninstall, context);
 	await authorized(context, authorization);
 	return {
 		context,
-		check,
+		...(check === undefined ? {} : { check }),
 		...(install === undefined ? {} : { install }),
 		...(uninstall === undefined ? {} : { uninstall }),
 		uninstallSupported: uninstall !== undefined,

@@ -189,6 +189,7 @@ test("rejects Custom scripts that escape the Source root", async () => {
 				type: "custom",
 				check: {
 					runtime: "node",
+					selector: ">=999.0 <1000",
 					script: "data:text/javascript,return%20{}",
 				},
 			},

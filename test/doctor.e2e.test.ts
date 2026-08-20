@@ -2311,6 +2311,7 @@ test("pre-aborted install does not apply the plan", async () => {
 	try {
 		const target = join(fixture.consumerRoot, "generated", "hello.txt");
 		await rm(target);
+		await rm(join(fixture.sourceRoot, "baseline", "files", "hello.txt"));
 		const result = await runInstall(fixture.consumerRoot, {
 			dryRun: false,
 			force: false,
@@ -2424,6 +2425,68 @@ test("runs an authorized inline Custom lifecycle and uninstalls its effect", asy
 	}
 });
 
+test("uninstall prepares only the Custom uninstall operation", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		const recipe = (check: string): string =>
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				`      ${check}`,
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: true };\"",
+				"    uninstall:",
+				"      runtime: node",
+				"      content: |",
+				"        const { rm } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await rm(join(request.consumerRoot, 'custom.txt'), { force: true });",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n");
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			recipe("# selector omitted"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			recipe('selector: ">=999 <1000"'),
+		);
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		assert.equal(existsSync(join(fixture.consumerRoot, "custom.txt")), false);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("uninstall preserves Custom effects without an uninstall handler", async () => {
 	const fixture = await createFixture();
 	try {
@@ -2502,6 +2565,7 @@ test("uninstall reports unsupported built-in effects instead of hiding them", as
 			fixture.consumerRoot,
 		]);
 		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		await rm(join(fixture.sourceRoot, "baseline", "files", "hello.txt"));
 
 		const uninstall = await runWritableCli(fixture, [
 			"uninstall",
