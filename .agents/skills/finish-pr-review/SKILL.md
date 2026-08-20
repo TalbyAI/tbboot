@@ -54,6 +54,8 @@ Cuando el predicado completo sea verdadero, llama a
   operaciones.
 - Usa `gh` para consultar el estado del PR.
 - Conserva el trabajo no relacionado.
+- Solo puedes crear commits y hacer push con cambios creados durante este
+  Goal; conserva intacto todo trabajo preexistente o no relacionado.
 - Nunca uses `gh pr approve`, `gh pr merge` ni `gh pr close`.
 - Nunca hagas push a `main` ni a otra rama distinta de la head branch del PR.
 
