@@ -112,6 +112,7 @@ export type CustomAuthorizationOptions = {
 	allowCustom?: string[];
 	profileRoot?: string;
 	interactive?: boolean;
+	persistTrust?: boolean;
 	cache?: Map<string, boolean>;
 };
 
@@ -858,7 +859,7 @@ async function authorized(
 						? { revision: context.revision as string }
 						: { fingerprint: context.sourceFingerprint }),
 				});
-				await saveTrust(options, trust);
+				if (options.persistTrust !== false) await saveTrust(options, trust);
 				options.cache?.set(key, true);
 				return;
 			}

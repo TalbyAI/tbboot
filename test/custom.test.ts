@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import {
 	mkdir,
 	mkdtemp,
@@ -10,8 +11,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 import {
+	type CustomAuthorizationOptions,
 	type CustomContext,
 	detectRuntime,
 	prepareCustomStep,
@@ -234,6 +237,127 @@ test("rejects Custom scripts that escape the Source root", async () => {
 			"code" in error &&
 			error.code === "custom-script-invalid",
 	);
+});
+
+test("temporary interactive authorization does not persist trust", async () => {
+	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-trust-"));
+	const sourceRoot = join(root, "source");
+	const profileRoot = join(root, "profile");
+	const originalStdin = process.stdin;
+	await mkdir(join(sourceRoot, "recipe"), { recursive: true });
+	await mkdir(profileRoot);
+	Object.defineProperty(process, "stdin", {
+		configurable: true,
+		value: Readable.from(["y\n"]),
+	});
+	try {
+		await prepareCustomStep(
+			{
+				type: "custom",
+				check: {
+					runtime: "node",
+					content: "return { status: 'ok', changed: false };",
+				},
+			},
+			{
+				consumerRoot: root,
+				sourceRoot,
+				recipeRoot: join(sourceRoot, "recipe"),
+				recipe: "recipe",
+				step: 1,
+				source: { provider: "local", locator: { path: sourceRoot } },
+				sourceFingerprint: "source-fingerprint",
+			},
+			{
+				profileRoot,
+				interactive: true,
+				persistTrust: false,
+			} satisfies CustomAuthorizationOptions,
+		);
+		assert.equal(existsSync(join(profileRoot, ".tbboot", "trust.yaml")), false);
+	} finally {
+		Object.defineProperty(process, "stdin", {
+			configurable: true,
+			value: originalStdin,
+		});
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("persistent trust is scoped to the Git Source revision", async () => {
+	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-git-trust-"));
+	const consumerRoot = join(root, "consumer");
+	const sourceRoot = join(root, "source");
+	const recipeRoot = join(sourceRoot, "recipe");
+	const profileRoot = join(root, "profile");
+	const trustPath = join(profileRoot, ".tbboot", "trust.yaml");
+	const source = {
+		provider: "git" as const,
+		locator: { repository: "https://example.test/source.git" },
+	};
+	const step = {
+		type: "custom" as const,
+		check: {
+			runtime: "node" as const,
+			content: "return { status: 'ok', changed: false };",
+		},
+	};
+	const context = (revision: string): CustomContext => ({
+		consumerRoot,
+		sourceRoot,
+		recipeRoot,
+		recipe: "recipe",
+		step: 1,
+		source,
+		revision,
+		sourceFingerprint: "fingerprint",
+	});
+	try {
+		await mkdir(recipeRoot, { recursive: true });
+		await mkdir(consumerRoot);
+		await mkdir(join(profileRoot, ".tbboot"), { recursive: true });
+		await writeFile(
+			trustPath,
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - source:",
+				"      provider: git",
+				"      locator:",
+				"        repository: https://example.test/source.git",
+				"    revision: old-revision",
+				"",
+			].join("\n"),
+		);
+		await assert.rejects(
+			prepareCustomStep(step, context("new-revision"), { profileRoot }),
+			(error: unknown) =>
+				error instanceof Error &&
+				"code" in error &&
+				error.code === "custom-authorization-required",
+		);
+		await writeFile(
+			trustPath,
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - source:",
+				"      provider: git",
+				"      locator:",
+				"        repository: https://example.test/source.git",
+				"    revision: new-revision",
+				"",
+			].join("\n"),
+		);
+		await prepareCustomStep(step, context("new-revision"), { profileRoot });
+		assert.equal(
+			existsSync(join(consumerRoot, ".tbboot", "trust.yaml")),
+			false,
+		);
+		assert.equal(existsSync(trustPath), true);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("prepares an in-Source script through a symlinked Source root", async (t) => {

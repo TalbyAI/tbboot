@@ -2278,6 +2278,9 @@ test("unauthorized optional Custom Steps produce a warning and no process", asyn
 		assert.equal(result.exitCode, 0);
 		assert.equal(envelope.status, "warning");
 		assert.equal(envelope.actions.length, 2);
+		const customAction = envelope.actions.find(({ type }) => type === "custom");
+		assert.ok(customAction);
+		assert.equal(customAction.state, "deferred");
 		const lastDiagnostic = envelope.diagnostics.at(-1);
 		assert.ok(lastDiagnostic);
 		assert.equal(lastDiagnostic.code, "custom-authorization-required");

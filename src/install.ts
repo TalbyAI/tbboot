@@ -370,6 +370,7 @@ export async function runInstall(
 		allowCustom: options.allowCustom,
 		profileRoot: options.profileRoot,
 		interactive: !options.dryRun && process.stdin.isTTY && process.stdout.isTTY,
+		persistTrust: !options.dryRun,
 	});
 	try {
 		return await applyInstallPlan(plan, options);

@@ -494,7 +494,10 @@ async function collectSourceSteps(
 						"trust-read",
 						"trust-write",
 					].includes(code);
-					descriptor.action.state = "error";
+					descriptor.action.state =
+						code === "custom-authorization-required" && step.optional === true
+							? "deferred"
+							: "error";
 					envelope.diagnostics.push(
 						diagnostic(
 							code,
@@ -1836,6 +1839,7 @@ export async function runDoctor(
 		allowCustom: options.allowCustom,
 		profileRoot: options.profileRoot,
 		interactive: process.stdin.isTTY && process.stdout.isTTY,
+		persistTrust: false,
 	});
 	delete built.envelope.consumerRoot;
 	try {
