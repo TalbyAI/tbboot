@@ -1215,6 +1215,24 @@ async function buildLocalPlan(
 		cleanups.push(cleanup);
 	};
 
+	const finalizeLockEntry = async (
+		source: Extract<SourceReference, { provider: "git" }>,
+		revision: string,
+		fingerprint: string,
+	): Promise<void> => {
+		if (preparedLockfile === undefined || !lockfileFinalized) return;
+		const before = JSON.stringify(preparedLockfile);
+		preparedLockfile = {
+			schemaVersion: 1,
+			sources: await replaceLockEntry(root, preparedLockfile.sources, {
+				source,
+				revision,
+				fingerprint,
+			}),
+		};
+		lockfileChanged ||= before !== JSON.stringify(preparedLockfile);
+	};
+
 	const resolveNode = async (
 		node: ResolvedSource,
 	): Promise<string | undefined> => {
@@ -1261,7 +1279,9 @@ async function buildLocalPlan(
 		}
 		const lockSelectorMatches =
 			lockEntry !== undefined &&
-			sameSelector(lockEntry.source.selector, node.reference.selector);
+			node.references.some(({ selector }) =>
+				sameSelector(lockEntry.source.selector, selector),
+			);
 		let useLock =
 			lockEntry !== undefined && lockMode !== "update" && lockSelectorMatches;
 		if (useLock && lockEntry !== undefined) {
@@ -1309,6 +1329,16 @@ async function buildLocalPlan(
 				),
 			);
 			return undefined;
+		}
+		if (
+			lockfileFinalized &&
+			!useLock &&
+			node.sourceRoot !== undefined &&
+			node.revision !== undefined &&
+			node.fingerprint !== undefined
+		) {
+			await finalizeLockEntry(node.reference, node.revision, node.fingerprint);
+			return `git:${node.revision}`;
 		}
 
 		try {
@@ -1370,18 +1400,7 @@ async function buildLocalPlan(
 					materialized.cleanup,
 				);
 			}
-			if (preparedLockfile !== undefined && lockfileFinalized) {
-				const before = JSON.stringify(preparedLockfile);
-				preparedLockfile = {
-					schemaVersion: 1,
-					sources: await replaceLockEntry(root, preparedLockfile.sources, {
-						source: node.reference,
-						revision,
-						fingerprint,
-					}),
-				};
-				lockfileChanged ||= before !== JSON.stringify(preparedLockfile);
-			}
+			await finalizeLockEntry(node.reference, revision, fingerprint);
 			return `git:${revision}`;
 		} catch (error) {
 			node.invalid = true;

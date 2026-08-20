@@ -1313,7 +1313,7 @@ test("lock updates replace equivalent normalized Git locators", async () => {
 	}
 });
 
-test("compatible Git selectors reuse one authoritative lock entry", async () => {
+test("compatible Git selectors reuse one authoritative lock entry independent of declaration order", async () => {
 	const fixture = await createFixture();
 	const gitFixture = await createGitFixture();
 	try {
@@ -1352,13 +1352,13 @@ test("compatible Git selectors reuse one authoritative lock entry", async () => 
 				"    locator:",
 				`      repository: ${gitFixture.repo}`,
 				"    selector:",
-				"      ref: v1",
+				"      to: v2",
+				"      from: v1",
 				"  - provider: git",
 				"    locator:",
 				`      repository: ${gitFixture.repo}`,
 				"    selector:",
-				"      to: v2",
-				"      from: v1",
+				"      ref: v1",
 				"",
 			].join("\n"),
 		);
@@ -1369,6 +1369,45 @@ test("compatible Git selectors reuse one authoritative lock entry", async () => 
 			fixture.consumerRoot,
 		]);
 		assert.equal(second.exitCode, 0, `${second.stdout}\n${second.stderr}`);
+	} finally {
+		await gitFixture.cleanup();
+		await fixture.cleanup();
+	}
+});
+
+test("unlocked Git sources reuse first-pass resolution during lock finalization", async () => {
+	const fixture = await createFixture();
+	const gitFixture = await createGitFixture();
+	const tracePath = join(fixture.root, "git-trace.json");
+	try {
+		await writeFile(
+			join(fixture.consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: git",
+				"    locator:",
+				`      repository: ${pathToFileURL(gitFixture.repo).href}`,
+				"    selector:",
+				"      ref: v1",
+				"",
+			].join("\n"),
+		);
+		const result = await runWritableCli(
+			fixture,
+			["install", "--json", "--root", fixture.consumerRoot],
+			{ env: { GIT_TRACE2_EVENT: tracePath } },
+		);
+		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+		const cloneCount = (await readFile(tracePath, "utf8"))
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { event?: string; argv?: string[] })
+			.filter(
+				({ event, argv }) => event === "start" && argv?.includes("clone"),
+			).length;
+		assert.equal(cloneCount, 2);
 	} finally {
 		await gitFixture.cleanup();
 		await fixture.cleanup();
