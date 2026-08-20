@@ -61,7 +61,20 @@ export type FileStep = {
 	target: string;
 	optional?: boolean;
 };
-export type CustomStep = { type: "custom"; optional?: boolean; check: unknown };
+export type CustomOperation = {
+	runtime: "node" | "pwsh";
+	selector?: string;
+	timeoutSeconds?: number;
+	script?: string;
+	content?: string;
+};
+export type CustomStep = {
+	type: "custom";
+	optional?: boolean;
+	check: CustomOperation;
+	install?: CustomOperation;
+	uninstall?: CustomOperation;
+};
 export type Step = FileStep | CustomStep;
 export type RecipeDocument = {
 	schemaVersion: 1;
@@ -93,7 +106,19 @@ export type FileFragmentStateEffect = {
 	artifactFingerprint: string;
 };
 
-export type StateEffect = FileStateEffect | FileFragmentStateEffect;
+export type CustomStateEffect = {
+	source: SourceReference;
+	revision?: string;
+	sourceFingerprint: string;
+	recipe: string;
+	step: number;
+	type: "custom";
+	uninstallSupported: boolean;
+};
+export type StateEffect =
+	| FileStateEffect
+	| FileFragmentStateEffect
+	| CustomStateEffect;
 export type StateDocument = { schemaVersion: 1; effects: StateEffect[] };
 export type LockEntry =
 	| {
@@ -107,6 +132,12 @@ export type LockEntry =
 			fingerprint: string;
 	  };
 export type LockfileDocument = { schemaVersion: 1; sources: LockEntry[] };
+export type TrustEntry = {
+	source: SourceReference;
+	revision?: string;
+	fingerprint?: string;
+};
+export type TrustDocument = { schemaVersion: 1; sources: TrustEntry[] };
 
 export type DocumentByKind = {
 	manifest: ManifestDocument;
@@ -115,7 +146,7 @@ export type DocumentByKind = {
 	catalog: Record<string, unknown>;
 	lockfile: LockfileDocument;
 	state: StateDocument;
-	trust: Record<string, unknown>;
+	trust: TrustDocument;
 };
 
 export type ValidationResult<T = DocumentByKind[DocumentKind]> = {

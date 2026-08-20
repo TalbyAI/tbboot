@@ -15,15 +15,18 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify } from "yaml";
 import type { DoctorEnvelope } from "../src/doctor.ts";
 import { planLocalInstall } from "../src/doctor.ts";
 import {
 	GitSourceError,
 	isGitRevisionAllowed,
+	isRepositoryUrl,
 	materializeGitSource,
+	normalizeGitRepository,
 	resolveGitSelector,
 } from "../src/git.ts";
+import { runInstall } from "../src/install.ts";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -31,6 +34,14 @@ const cliPath = join(projectRoot, "src", "cli.ts");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 let installedRoot: string | undefined;
 let installedBinPromise: Promise<string> | undefined;
+
+test("recognizes SCP Git locators without changing local path resolution", () => {
+	const root = join(tmpdir(), "tbboot-git-root");
+	const scp = "git@github.com:TalbyAI/tbboot.git";
+	assert.equal(isRepositoryUrl(scp), true);
+	assert.equal(normalizeGitRepository(root, scp), scp);
+	assert.equal(normalizeGitRepository(root, "./source"), join(root, "source"));
+});
 
 type Fixture = {
 	root: string;
@@ -2257,7 +2268,7 @@ test("missing input is a conflict and optional missing input is a warning", asyn
 	}
 });
 
-test("unsupported Custom Steps produce no action and follow optionality", async () => {
+test("unauthorized optional Custom Steps produce a warning and no process", async () => {
 	const fixture = await createFixture();
 	try {
 		await writeRecipe(fixture.sourceRoot, "custom", [
@@ -2266,11 +2277,455 @@ test("unsupported Custom Steps produce no action and follow optionality", async 
 		const { result, envelope } = await runDoctor(fixture);
 		assert.equal(result.exitCode, 0);
 		assert.equal(envelope.status, "warning");
-		assert.equal(envelope.actions.length, 1);
+		assert.equal(envelope.actions.length, 2);
 		const lastDiagnostic = envelope.diagnostics.at(-1);
 		assert.ok(lastDiagnostic);
-		assert.equal(lastDiagnostic.code, "unsupported-step");
+		assert.equal(lastDiagnostic.code, "custom-authorization-required");
 		assert.equal(lastDiagnostic.severity, "warning");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("optional Custom preparation failures remain warnings", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "optional-custom"), {
+			recursive: true,
+		});
+		await writeFile(
+			join(fixture.sourceRoot, "optional-custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    optional: true",
+				"    check:",
+				"      runtime: node",
+				"      script: missing.js",
+				"",
+			].join("\n"),
+		);
+		const { result, envelope } = await runDoctor(fixture);
+		assert.equal(result.exitCode, 0);
+		assert.equal(envelope.status, "warning");
+		assert.equal(envelope.diagnostics[0]?.severity, "warning");
+		assert.equal(envelope.diagnostics[0]?.code, "custom-script-missing");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("pre-aborted install does not apply the plan", async () => {
+	const fixture = await createFixture();
+	try {
+		const target = join(fixture.consumerRoot, "generated", "hello.txt");
+		await rm(target);
+		await rm(join(fixture.sourceRoot, "baseline", "files", "hello.txt"));
+		const result = await runInstall(fixture.consumerRoot, {
+			dryRun: false,
+			force: false,
+			signal: AbortSignal.abort(),
+		});
+		assert.equal(result.exitCode, 130);
+		assert.equal(existsSync(target), false);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("runs an authorized inline Custom lifecycle and uninstalls its effect", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: |",
+				"        const { access } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        try { await access(join(request.consumerRoot, 'custom.txt')); return { status: 'ok', changed: false }; }",
+				"        catch { return { status: 'missing', changed: false }; }",
+				"    install:",
+				"      runtime: node",
+				"      content: |",
+				"        const { writeFile } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await writeFile(join(request.consumerRoot, 'custom.txt'), 'custom\\n');",
+				"        return { status: 'ok', changed: true };",
+				"    uninstall:",
+				"      runtime: node",
+				"      content: |",
+				"        const { rm } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await rm(join(request.consumerRoot, 'custom.txt'), { force: true });",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		assert.equal(install.stderr, "");
+		const installed = parseJsonOutput<{
+			actions: Array<{ type: string; state: string }>;
+			changed: boolean;
+		}>(install.stdout);
+		assert.equal(installed.changed, true);
+		assert.ok(
+			installed.actions.some(
+				({ type, state }) => type === "custom" && state === "ok",
+			),
+		);
+		assert.equal(
+			await readFile(join(fixture.consumerRoot, "custom.txt"), "utf8"),
+			"custom\n",
+		);
+
+		const doctor = await runDoctor(
+			fixture,
+			"--allow-custom",
+			fixture.sourceRoot,
+		);
+		assert.equal(doctor.result.exitCode, 0);
+		assert.ok(
+			doctor.envelope.actions.some(
+				({ type, state }) => type === "custom" && state === "ok",
+			),
+		);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		assert.equal(uninstall.stderr, "");
+		assert.equal(existsSync(join(fixture.consumerRoot, "custom.txt")), false);
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ type: string }> };
+		assert.equal(
+			state.effects.some(({ type }) => type === "custom"),
+			false,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall prepares only the Custom uninstall operation", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		const recipe = (check: string): string =>
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				`      ${check}`,
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: true };\"",
+				"    uninstall:",
+				"      runtime: node",
+				"      content: |",
+				"        const { rm } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await rm(join(request.consumerRoot, 'custom.txt'), { force: true });",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n");
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			recipe("# selector omitted"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			recipe('selector: ">=999 <1000"'),
+		);
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		assert.equal(existsSync(join(fixture.consumerRoot, "custom.txt")), false);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall preserves Custom effects without an uninstall handler", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: true };\"",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		const statePath = join(fixture.consumerRoot, ".tbboot", "state.yaml");
+		const installedState = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{
+				type: string;
+				source: Record<string, unknown>;
+			}>;
+		};
+		const customEffect = installedState.effects.find(
+			({ type }) => type === "custom",
+		);
+		assert.ok(customEffect);
+		customEffect.source = {
+			locator: customEffect.source.locator,
+			provider: customEffect.source.provider,
+		};
+		await writeFile(statePath, stringify(installedState));
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			status: string;
+			diagnostics: Array<{ code: string; severity: string }>;
+		}>(uninstall.stdout);
+		assert.equal(envelope.status, "warning");
+		assert.deepEqual(envelope.diagnostics.at(-1), {
+			code: "uninstall-unsupported",
+			severity: "warning",
+			message: "Custom step does not declare an uninstall operation",
+			source: await realpath(fixture.sourceRoot),
+			recipe: "custom",
+			step: 1,
+		});
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ type: string }> };
+		assert.equal(
+			state.effects.some(({ type }) => type === "custom"),
+			true,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall reports Custom effects with no matching current step", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: true };\"",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		await rm(join(fixture.sourceRoot, "custom", "recipe.yaml"));
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			status: string;
+			diagnostics: Array<{ code: string; severity: string }>;
+		}>(uninstall.stdout);
+		assert.deepEqual(envelope.diagnostics.at(-1), {
+			code: "custom-effect-unmatched",
+			severity: "warning",
+			message:
+				"Installation record Custom effect has no matching current Custom step; the effect was preserved",
+			source: "../source",
+			recipe: "custom",
+			step: 1,
+		});
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall reports unsupported built-in effects instead of hiding them", async () => {
+	const fixture = await createFixture();
+	try {
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		await rm(join(fixture.sourceRoot, "baseline", "files", "hello.txt"));
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			status: string;
+			diagnostics: Array<{ code: string; severity: string }>;
+		}>(uninstall.stdout);
+		assert.equal(envelope.status, "warning");
+		assert.ok(
+			envelope.diagnostics.some(
+				({ code, severity }) =>
+					code === "uninstall-unsupported" && severity === "warning",
+			),
+		);
+		const state = parseYaml(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ type: string }> };
+		assert.equal(
+			state.effects.some(({ type }) => type === "file"),
+			true,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install dry-run defers authorized Custom processes", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "custom", [{ type: "custom" }]);
+		const before = await snapshotTree(
+			fixture.consumerRoot,
+			fixture.profileRoot,
+		);
+		const result = await runCli(fixture, [
+			"install",
+			"--dry-run",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.stderr, "");
+		const envelope = parseJsonOutput<{
+			changed: boolean;
+			actions: Array<{ type: string; state: string }>;
+			diagnostics: Array<{ code: string }>;
+		}>(result.stdout);
+		assert.equal(envelope.changed, false);
+		assert.ok(
+			envelope.actions.some(
+				({ type, state }) => type === "custom" && state === "deferred",
+			),
+		);
+		assert.ok(
+			envelope.diagnostics.some(({ code }) => code === "custom-check-deferred"),
+		);
+		assert.deepEqual(
+			await snapshotTree(fixture.consumerRoot, fixture.profileRoot),
+			before,
+		);
 	} finally {
 		await fixture.cleanup();
 	}

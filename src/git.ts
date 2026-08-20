@@ -49,8 +49,11 @@ function commandCode(error: unknown): number | string | undefined {
 		: undefined;
 }
 
-function isRepositoryUrl(value: string): boolean {
-	return /^[A-Za-z][A-Za-z+.-]*:\/\//.test(value);
+export function isRepositoryUrl(value: string): boolean {
+	return (
+		/^[A-Za-z][A-Za-z+.-]*:\/\//.test(value) ||
+		/^[^/\s@]+@[^:/\s]+:.+/.test(value)
+	);
 }
 
 export function normalizeGitRepository(

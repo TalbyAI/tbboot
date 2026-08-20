@@ -23,6 +23,15 @@ import type {
 } from "./contract.ts";
 import { validateDocument } from "./contract.ts";
 import {
+	type CustomAuthorizationOptions,
+	sourceFingerprint as calculateSourceFingerprint,
+	customDiagnosticCode,
+	isCancellation,
+	type PreparedCustomStep,
+	prepareCustomStep,
+	runPreparedOperation,
+} from "./custom.ts";
+import {
 	GitSourceError,
 	isGitRevisionAllowed,
 	materializeGitSource,
@@ -48,14 +57,15 @@ type DiagnosticContext = Pick<
 >;
 export type ArtifactType = Exclude<Step["type"], "custom">;
 export type ArtifactState = "satisfied" | "missing" | "drift" | "conflict";
+export type ActionState = ArtifactState | "deferred" | "ok" | "error";
 
 export type ArtifactAction = {
 	source: string;
 	recipe: string;
 	step: number;
-	type: ArtifactType;
-	target: string;
-	state: ArtifactState;
+	type: Step["type"];
+	target?: string;
+	state: ActionState;
 };
 
 export type PlannedArtifact = {
@@ -73,13 +83,27 @@ export type PlannedArtifact = {
 	action: ArtifactAction;
 };
 
+export type PlannedCustomStep = {
+	source: SourceReference;
+	sourceRoot: string;
+	revision?: string;
+	recipe: string;
+	step: number;
+	optional: boolean;
+	uninstallUnsupported?: boolean;
+	prepared?: PreparedCustomStep;
+	action: ArtifactAction;
+};
+
 export type LocalInstallPlan = {
 	consumerRoot: string;
 	actions: ArtifactAction[];
 	diagnostics: Diagnostic[];
 	artifacts: PlannedArtifact[];
+	customSteps: PlannedCustomStep[];
 	lockfile?: LockfileDocument;
 	lockfileChanged: boolean;
+	cleanup?: () => Promise<void>;
 };
 
 export type DoctorEnvelope = {
@@ -94,7 +118,8 @@ export type DoctorEnvelope = {
 
 export type DoctorResult = {
 	envelope: DoctorEnvelope;
-	exitCode: 0 | 1;
+	exitCode: 0 | 1 | 130;
+	stderr?: string;
 };
 
 type PathResolution =
@@ -109,11 +134,13 @@ type StepDescriptor = {
 	revision?: string;
 	recipe: string;
 	step: number;
-	type: ArtifactType;
-	input: string;
-	target: string;
+	type: Step["type"];
+	input?: string;
+	target?: string;
 	optional: boolean;
 	recipeRoot: string;
+	uninstallUnsupported?: boolean;
+	preparedCustom?: PreparedCustomStep;
 	inputPath?: PathResolution;
 	targetPath?: PathResolution;
 	marker?: string;
@@ -231,19 +258,32 @@ function addStepDiagnostic(
 	);
 }
 
-function artifactAction(
-	descriptor: Pick<
-		StepDescriptor,
-		"source" | "recipe" | "step" | "type" | "target"
-	>,
-): ArtifactAction {
+function artifactAction(descriptor: {
+	source: string;
+	recipe: string;
+	step: number;
+	type: ArtifactType;
+	target: string;
+}): ArtifactAction {
 	return {
 		source: descriptor.source,
 		recipe: descriptor.recipe,
 		step: descriptor.step,
 		type: descriptor.type,
-		target: descriptor.target,
+		target: descriptor.target as string,
 		state: "conflict",
+	};
+}
+
+function customAction(
+	descriptor: Pick<StepDescriptor, "source" | "recipe" | "step">,
+): ArtifactAction {
+	return {
+		source: descriptor.source,
+		recipe: descriptor.recipe,
+		step: descriptor.step,
+		type: "custom",
+		state: "deferred",
 	};
 }
 
@@ -341,7 +381,10 @@ async function collectSourceSteps(
 	descriptors: StepDescriptor[],
 	envelope: DoctorEnvelope,
 	metadata: {
+		mode?: "doctor" | "install" | "uninstall";
 		revision?: string;
+		sourceFingerprint?: string;
+		customAuthorization?: CustomAuthorizationOptions;
 	} = {},
 	sourceDocument?: SourceDocument,
 ): Promise<void> {
@@ -401,20 +444,75 @@ async function collectSourceSteps(
 		for (const [index, step] of recipeDocument.steps.entries()) {
 			const stepNumber = index + 1;
 			if (step.type === "custom") {
-				envelope.diagnostics.push(
-					diagnostic(
-						"unsupported-step",
-						"Custom steps are not supported by doctor",
+				const descriptor: StepDescriptor = {
+					sourceReference,
+					source: sourceRoot,
+					sourceLabel: sourceLabel(sourceReference, sourceRoot),
+					revision: metadata.revision,
+					recipe,
+					step: stepNumber,
+					type: "custom",
+					optional: step.optional === true,
+					recipeRoot: join(sourceRoot, recipe),
+					action: customAction({
+						source: sourceDisplay(sourceReference, sourceRoot),
+						recipe,
+						step: stepNumber,
+					}),
+				};
+				if (metadata.mode === "uninstall" && step.uninstall === undefined) {
+					descriptor.uninstallUnsupported = true;
+					descriptors.push(descriptor);
+					continue;
+				}
+				try {
+					const fingerprint =
+						metadata.sourceFingerprint ??
+						metadata.revision ??
+						(await calculateSourceFingerprint(sourceRoot));
+					descriptor.preparedCustom = await prepareCustomStep(
+						step,
 						{
-							document: documentPaths.recipe,
-							path: `/steps/${index}`,
-							source: sourceRoot,
+							consumerRoot: envelope.consumerRoot as string,
+							sourceRoot,
+							recipeRoot: descriptor.recipeRoot,
 							recipe,
 							step: stepNumber,
+							source: sourceReference,
+							revision: metadata.revision,
+							sourceFingerprint: fingerprint,
 						},
-						step.optional === true ? "warning" : "error",
-					),
-				);
+						metadata.customAuthorization,
+						metadata.mode === "uninstall" ? ["uninstall"] : undefined,
+					);
+				} catch (error) {
+					const code = customDiagnosticCode(error);
+					const fatal = [
+						"custom-script-invalid",
+						"custom-script-escape",
+						"trust-invalid",
+						"trust-read",
+						"trust-write",
+					].includes(code);
+					descriptor.action.state = "error";
+					envelope.diagnostics.push(
+						diagnostic(
+							code,
+							error instanceof Error
+								? error.message
+								: "Unable to prepare Custom step",
+							{
+								document: documentPaths.recipe,
+								path: `/steps/${index}`,
+								source: sourceRoot,
+								recipe,
+								step: stepNumber,
+							},
+							fatal ? "error" : step.optional === true ? "warning" : "error",
+						),
+					);
+				}
+				descriptors.push(descriptor);
 				continue;
 			}
 
@@ -441,13 +539,13 @@ async function collectSourceSteps(
 			descriptor.inputPath = await resolveContained(
 				sourceRoot,
 				descriptor.recipeRoot,
-				descriptor.input,
+				step.input,
 			);
 			const consumerRoot = envelope.consumerRoot as string;
 			descriptor.targetPath = await resolveContained(
 				consumerRoot,
 				consumerRoot,
-				descriptor.target,
+				step.target,
 			);
 			descriptors.push(descriptor);
 		}
@@ -650,10 +748,11 @@ function fragmentState(
 async function evaluateDescriptor(
 	descriptor: StepDescriptor,
 	envelope: DoctorEnvelope,
-	mode: "doctor" | "install",
+	mode: "doctor" | "install" | "uninstall",
 	force: boolean,
 ): Promise<void> {
 	if (descriptor.collision) return;
+	if (descriptor.type === "custom" || mode === "uninstall") return;
 
 	if (isPathEscape(descriptor.inputPath)) {
 		addStepDiagnostic(
@@ -798,6 +897,7 @@ type BuiltLocalPlan = {
 	consumerRoot?: string;
 	lockfile?: LockfileDocument;
 	lockfileChanged: boolean;
+	cleanup?: () => Promise<void>;
 };
 
 export type LockMode = "none" | "normal" | "update" | "frozen";
@@ -1000,10 +1100,12 @@ function lockDiagnostic(
 
 async function buildLocalPlan(
 	root: string,
-	mode: "doctor" | "install",
+	mode: "doctor" | "install" | "uninstall",
 	force: boolean,
 	lockMode: LockMode = mode === "install" ? "normal" : "none",
+	customAuthorization: CustomAuthorizationOptions = {},
 ): Promise<BuiltLocalPlan> {
+	customAuthorization.cache ??= new Map();
 	const envelope: DoctorEnvelope = {
 		schemaVersion: 1,
 		command: "doctor",
@@ -1050,6 +1152,7 @@ async function buildLocalPlan(
 	const queue: ResolvedSource[] = [];
 	const queued = new Set<string>();
 	const cleanups: Array<() => Promise<void>> = [];
+	let cleanupTransferred = false;
 	const duplicateDiagnostics: Diagnostic[] = [];
 	let preparedLockfile: LockfileDocument | undefined;
 	let lockfileChanged = false;
@@ -1588,7 +1691,12 @@ async function buildLocalPlan(
 				node.reference,
 				descriptors,
 				envelope,
-				{ revision: node.revision },
+				{
+					mode,
+					revision: node.revision,
+					customAuthorization,
+					sourceFingerprint: node.fingerprint,
+				},
 				node.sourceDocument,
 			);
 		}
@@ -1598,17 +1706,25 @@ async function buildLocalPlan(
 			envelope.actions.push(descriptor.action);
 			await evaluateDescriptor(descriptor, envelope, mode, force);
 		}
+		cleanupTransferred = true;
 		return {
 			envelope,
 			descriptors,
 			consumerRoot,
 			lockfile: preparedLockfile,
 			lockfileChanged,
+			cleanup: async () => {
+				for (const cleanup of [...cleanups].reverse()) {
+					await cleanup().catch(() => undefined);
+				}
+			},
 		};
 	} finally {
 		// ponytail: cleanup failures stay best-effort; aggregate diagnostics if reporting becomes necessary.
-		for (const cleanup of [...cleanups].reverse()) {
-			await cleanup().catch(() => undefined);
+		if (!cleanupTransferred) {
+			for (const cleanup of [...cleanups].reverse()) {
+				await cleanup().catch(() => undefined);
+			}
 		}
 	}
 }
@@ -1617,10 +1733,19 @@ export async function planLocalInstall(
 	root: string,
 	force: boolean,
 	lockMode: LockMode = "normal",
+	customAuthorization: CustomAuthorizationOptions = {},
+	mode: "install" | "uninstall" = "install",
 ): Promise<LocalInstallPlan> {
-	const built = await buildLocalPlan(root, "install", force, lockMode);
+	const built = await buildLocalPlan(
+		root,
+		mode,
+		force,
+		lockMode,
+		customAuthorization,
+	);
 	finish(built.envelope);
 	const artifacts = built.descriptors.flatMap((descriptor) => {
+		if (descriptor.type === "custom") return [];
 		const input = descriptor.inputBytes;
 		const targetPath = resolvedPath(descriptor.targetPath);
 		if (
@@ -1628,7 +1753,7 @@ export async function planLocalInstall(
 			input === undefined ||
 			targetPath === undefined ||
 			!(["satisfied", "missing", "drift"] as ArtifactState[]).includes(
-				descriptor.action.state,
+				descriptor.action.state as ArtifactState,
 			)
 		) {
 			return [];
@@ -1650,19 +1775,156 @@ export async function planLocalInstall(
 			},
 		];
 	});
+	const customSteps = built.descriptors.flatMap((descriptor) => {
+		if (
+			descriptor.type !== "custom" ||
+			(descriptor.preparedCustom === undefined &&
+				!descriptor.uninstallUnsupported)
+		)
+			return [];
+		return [
+			{
+				source: descriptor.sourceReference,
+				sourceRoot: descriptor.source,
+				revision: descriptor.revision,
+				recipe: descriptor.recipe,
+				step: descriptor.step,
+				optional: descriptor.optional,
+				...(descriptor.uninstallUnsupported === undefined
+					? {}
+					: { uninstallUnsupported: descriptor.uninstallUnsupported }),
+				prepared: descriptor.preparedCustom,
+				action: descriptor.action,
+			},
+		];
+	});
 	delete built.envelope.consumerRoot;
 	return {
 		consumerRoot: built.consumerRoot ?? resolve(root),
 		actions: built.envelope.actions,
 		diagnostics: built.envelope.diagnostics,
 		artifacts,
+		customSteps,
 		lockfile: built.lockfile,
 		lockfileChanged: built.lockfileChanged,
+		cleanup: built.cleanup,
 	};
 }
 
-export async function runDoctor(root: string): Promise<DoctorResult> {
-	const built = await buildLocalPlan(root, "doctor", false);
+export async function runDoctor(
+	root: string,
+	options: {
+		allowCustom?: string[];
+		profileRoot?: string;
+		signal?: AbortSignal;
+	} = {},
+): Promise<DoctorResult> {
+	if (options.signal?.aborted) {
+		return {
+			envelope: {
+				schemaVersion: 1,
+				command: "doctor",
+				status: "ok",
+				changed: false,
+				actions: [],
+				diagnostics: [],
+			},
+			exitCode: 130,
+		};
+	}
+	const built = await buildLocalPlan(root, "doctor", false, "none", {
+		allowCustom: options.allowCustom,
+		profileRoot: options.profileRoot,
+		interactive: process.stdin.isTTY && process.stdout.isTTY,
+	});
 	delete built.envelope.consumerRoot;
-	return finish(built.envelope);
+	try {
+		let stderr = "";
+		let cancelled = options.signal?.aborted ?? false;
+		if (
+			!cancelled &&
+			!built.envelope.diagnostics.some(({ severity }) => severity === "error")
+		) {
+			for (const descriptor of built.descriptors) {
+				if (options.signal?.aborted) {
+					cancelled = true;
+					break;
+				}
+				if (
+					descriptor.type !== "custom" ||
+					descriptor.preparedCustom === undefined ||
+					descriptor.preparedCustom.check === undefined
+				)
+					continue;
+				try {
+					const outcome = await runPreparedOperation(
+						descriptor.preparedCustom.check,
+						descriptor.preparedCustom.context,
+						options.signal,
+					);
+					stderr += outcome.stderr;
+					descriptor.action.state =
+						outcome.result.status === "ok" ? "ok" : outcome.result.status;
+					if (outcome.result.status !== "ok") {
+						built.envelope.diagnostics.push(
+							diagnostic(
+								outcome.result.status === "missing"
+									? "custom-missing"
+									: outcome.result.status === "drift"
+										? "custom-drift"
+										: "custom-error",
+								outcome.result.message ??
+									`Custom check returned ${outcome.result.status}`,
+								{
+									source: descriptor.source,
+									recipe: descriptor.recipe,
+									step: descriptor.step,
+								},
+								descriptor.optional ? "warning" : "error",
+							),
+						);
+						if (!descriptor.optional) break;
+					}
+				} catch (error) {
+					stderr +=
+						typeof (error as { stderr?: unknown }).stderr === "string"
+							? (error as { stderr: string }).stderr
+							: "";
+					if (isCancellation(error)) {
+						cancelled = true;
+						built.envelope.diagnostics.push(
+							diagnostic("custom-cancelled", "Custom execution was cancelled", {
+								source: descriptor.source,
+								recipe: descriptor.recipe,
+								step: descriptor.step,
+							}),
+						);
+						break;
+					}
+					descriptor.action.state = "error";
+					built.envelope.diagnostics.push(
+						diagnostic(
+							"custom-error",
+							error instanceof Error ? error.message : "Custom check failed",
+							{
+								source: descriptor.source,
+								recipe: descriptor.recipe,
+								step: descriptor.step,
+							},
+							descriptor.optional ? "warning" : "error",
+						),
+					);
+					if (!descriptor.optional) break;
+				}
+			}
+		}
+		const result = finish(built.envelope);
+		return {
+			...result,
+			...(stderr === "" ? {} : { stderr }),
+			exitCode: cancelled ? 130 : result.exitCode,
+		};
+	} finally {
+		await built.cleanup?.();
+	}
 }
