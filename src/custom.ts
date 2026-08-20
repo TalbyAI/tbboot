@@ -4,6 +4,7 @@ import {
 	mkdir,
 	readdir,
 	readFile,
+	readlink,
 	realpath,
 	stat,
 	writeFile,
@@ -30,6 +31,7 @@ const DEFAULT_TIMEOUTS = {
 } as const;
 const VERSION_RE = /(\d+)\.(\d+)(?:\.(\d+))?/;
 const RANGE_RE = /^>=(\d+\.\d+(?:\.\d+)?)\s+<(\d+(?:\.\d+){0,2})$/;
+const runtimeCache = new Map<string, Promise<RuntimeStatus>>();
 
 export const RUNTIME_DEFINITIONS = Object.freeze({
 	node: Object.freeze({
@@ -223,12 +225,11 @@ async function resolveExecutable(command: string): Promise<string> {
 	});
 }
 
-export async function detectRuntime(
+async function detectRuntimeUncached(
 	name: RuntimeName,
 	selector?: string,
 ): Promise<RuntimeStatus> {
 	const definition = RUNTIME_DEFINITIONS[name];
-	if (selector !== undefined) parseRange(selector);
 	let file = process.execPath;
 	let versionText = process.version;
 	if (name === "pwsh") {
@@ -256,6 +257,24 @@ export async function detectRuntime(
 		}
 	}
 	return classifyRuntime(name, true, parseVersion(versionText), file, selector);
+}
+
+export async function detectRuntime(
+	name: RuntimeName,
+	selector?: string,
+): Promise<RuntimeStatus> {
+	if (selector !== undefined) parseRange(selector);
+	const key = `${name}\0${selector ?? ""}`;
+	const cached = runtimeCache.get(key);
+	if (cached !== undefined) return cached;
+	const detected = detectRuntimeUncached(name, selector);
+	runtimeCache.set(key, detected);
+	try {
+		return await detected;
+	} catch (error) {
+		if (runtimeCache.get(key) === detected) runtimeCache.delete(key);
+		throw error;
+	}
 }
 
 function nodeArgs(
@@ -286,7 +305,19 @@ function pwshArgs(
 	content: string | undefined,
 ): string[] {
 	const common = ["-NoLogo", "-NoProfile", "-NonInteractive"];
-	if (script !== undefined) return [...common, "-File", script];
+	if (script !== undefined) {
+		return [
+			...common,
+			"-CommandWithArgs",
+			[
+				"$requestJson = [Console]::In.ReadToEnd()",
+				"$Request = $requestJson | ConvertFrom-Json",
+				"$result = & $args[0]",
+				"$result | ConvertTo-Json -Compress -Depth 100",
+			].join("\n"),
+			script,
+		];
+	}
 	return [
 		...common,
 		"-Command",
@@ -588,9 +619,15 @@ async function scriptPath(
 			message: "Custom script is not readable",
 		});
 	}
-	if (!isInside(sourceRoot, canonical) || !(await stat(canonical)).isFile()) {
+	const canonicalRoot = await realpath(sourceRoot);
+	if (!isInside(canonicalRoot, canonical)) {
 		throw runnerError("custom-script-escape", {
 			message: "Custom script escapes the canonical Source root",
+		});
+	}
+	if (!(await stat(canonical)).isFile()) {
+		throw runnerError("custom-script-not-file", {
+			message: "Custom script must resolve to a regular file",
 		});
 	}
 	return canonical;
@@ -666,7 +703,10 @@ async function fingerprintDirectory(root: string): Promise<string> {
 			if (entry.name === ".git") continue;
 			const absolute = join(current, entry.name);
 			const path = relative(root, absolute).split(sep).join("/");
-			if (entry.isDirectory()) {
+			if (entry.isSymbolicLink()) {
+				hash.update(`l:${path}\0`);
+				hash.update(await readlink(absolute));
+			} else if (entry.isDirectory()) {
 				hash.update(`d:${path}\0`);
 				await visit(absolute);
 			} else {

@@ -90,6 +90,7 @@ export type PlannedCustomStep = {
 	recipe: string;
 	step: number;
 	optional: boolean;
+	uninstallUnsupported?: boolean;
 	prepared?: PreparedCustomStep;
 	action: ArtifactAction;
 };
@@ -1789,6 +1790,9 @@ export async function planLocalInstall(
 				recipe: descriptor.recipe,
 				step: descriptor.step,
 				optional: descriptor.optional,
+				...(descriptor.uninstallUnsupported === undefined
+					? {}
+					: { uninstallUnsupported: descriptor.uninstallUnsupported }),
 				prepared: descriptor.preparedCustom,
 				action: descriptor.action,
 			},

@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	realpath,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,6 +16,7 @@ import {
 	detectRuntime,
 	prepareCustomStep,
 	runHandler,
+	sourceFingerprint,
 } from "../src/custom.ts";
 
 const hasPwsh = await detectRuntime("pwsh")
@@ -119,6 +128,16 @@ test("terminates descendants of timed-out handlers", async () => {
 			(error: unknown) =>
 				error instanceof Error && "code" in error && error.code === "timeout",
 		);
+		assert.equal(
+			await waitFor(
+				() =>
+					readFile(pidFile)
+						.then(() => true)
+						.catch(() => false),
+				2_000,
+			),
+			true,
+		);
 		childPid = Number(await readFile(pidFile, "utf8"));
 		assert.equal(
 			await waitFor(
@@ -143,6 +162,7 @@ test("rejects Custom scripts that escape the Source root", async () => {
 	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-"));
 	const sourceRoot = join(root, "source");
 	const recipeRoot = join(sourceRoot, "recipe");
+	await mkdir(recipeRoot, { recursive: true });
 	await writeFile(
 		join(root, "outside.js"),
 		"export default async () => ({ status: 'ok', changed: false });",
@@ -187,6 +207,20 @@ test("rejects Custom scripts that escape the Source root", async () => {
 		prepareCustomStep(
 			{
 				type: "custom",
+				check: { runtime: "node", script: "." },
+			},
+			context,
+			{ allowCustom: [sourceRoot] },
+		),
+		(error: unknown) =>
+			error instanceof Error &&
+			"code" in error &&
+			error.code === "custom-script-not-file",
+	);
+	await assert.rejects(
+		prepareCustomStep(
+			{
+				type: "custom",
 				check: {
 					runtime: "node",
 					selector: ">=999.0 <1000",
@@ -200,6 +234,110 @@ test("rejects Custom scripts that escape the Source root", async () => {
 			"code" in error &&
 			error.code === "custom-script-invalid",
 	);
+});
+
+test("prepares an in-Source script through a symlinked Source root", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-source-link-"));
+	const realSourceRoot = join(root, "source-real");
+	const sourceRoot = join(root, "source-link");
+	const recipeRoot = join(sourceRoot, "recipe");
+	const script = join(realSourceRoot, "shared.js");
+	try {
+		await mkdir(join(realSourceRoot, "recipe"), { recursive: true });
+		await writeFile(
+			script,
+			"export default async () => ({ status: 'ok', changed: false });",
+		);
+		try {
+			await symlink(
+				realSourceRoot,
+				sourceRoot,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "EPERM" || code === "EACCES") {
+				t.skip("symlinks are not available in this environment");
+				return;
+			}
+			throw error;
+		}
+		const prepared = await prepareCustomStep(
+			{
+				type: "custom",
+				check: { runtime: "node", script: "../shared.js" },
+			},
+			{
+				consumerRoot: root,
+				sourceRoot,
+				recipeRoot,
+				recipe: "recipe",
+				step: 1,
+				source: { provider: "local", locator: { path: sourceRoot } },
+				sourceFingerprint: "test",
+			},
+			{ allowCustom: [sourceRoot] },
+		);
+		assert.equal(prepared.check?.script, await realpath(script));
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("fingerprints symlink metadata without reading linked directories", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-fingerprint-"));
+	const sourceRoot = join(root, "source");
+	const outsideRoot = join(root, "outside");
+	try {
+		await mkdir(sourceRoot, { recursive: true });
+		await mkdir(outsideRoot, { recursive: true });
+		await writeFile(join(outsideRoot, "foreign.txt"), "one\n");
+		try {
+			await symlink(
+				outsideRoot,
+				join(sourceRoot, "linked"),
+				process.platform === "win32" ? "junction" : "dir",
+			);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "EPERM" || code === "EACCES") {
+				t.skip("symlinks are not available in this environment");
+				return;
+			}
+			throw error;
+		}
+		const before = await sourceFingerprint(sourceRoot);
+		await writeFile(join(outsideRoot, "foreign.txt"), "two\n");
+		assert.equal(await sourceFingerprint(sourceRoot), before);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("runs an external PowerShell Custom handler through the JSON protocol", {
+	skip: !hasPwsh,
+}, async () => {
+	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-pwsh-"));
+	const script = join(root, "handler.ps1");
+	try {
+		await writeFile(
+			script,
+			"return @{ status = 'ok'; changed = $false; details = @{ operation = $Request.operation } }",
+		);
+		const outcome = await runHandler({
+			runtime: "pwsh",
+			script,
+			request: { operation: "check" },
+			cwd: root,
+		});
+		assert.deepEqual(outcome.result, {
+			status: "ok",
+			changed: false,
+			details: { operation: "check" },
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("rejects Custom results with a non-string message", async () => {

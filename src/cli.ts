@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import type { DoctorEnvelope } from "./doctor.ts";
 import { runDoctor } from "./doctor.ts";
+import { isRepositoryUrl } from "./git.ts";
 import type { InstallEnvelope } from "./install.ts";
 import { runInstall, runUninstall, type UninstallEnvelope } from "./install.ts";
 
@@ -146,7 +147,7 @@ function parseCommandLine(argv: string[], cwd: string): ParseResult {
 		const json = (values.json as boolean | undefined) ?? false;
 		const allowCustom = (
 			(values["allow-custom"] as string[] | undefined) ?? []
-		).map((value) => (value.includes("://") ? value : resolve(cwd, value)));
+		).map((value) => (isRepositoryUrl(value) ? value : resolve(cwd, value)));
 		if (command === "doctor") {
 			return { ok: true, command, options: { root, json, allowCustom } };
 		}

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { stringify } from "yaml";
 import type {
 	CustomStateEffect,
@@ -22,6 +22,7 @@ import {
 	planLocalInstall,
 	scanManagedBlock,
 } from "./doctor.ts";
+import { normalizeGitPath, normalizeGitRepository } from "./git.ts";
 import {
 	errorMessage,
 	finish,
@@ -135,13 +136,18 @@ function replaceFragment(
 }
 
 function stateKey(
+	consumerRoot: string,
 	effect: Pick<StateEffect, "source" | "recipe" | "step" | "type"> & {
 		target?: string;
 		marker?: string;
 	},
 ): string {
+	const source =
+		effect.source.provider === "local"
+			? `local:${resolve(consumerRoot, effect.source.locator.path)}`
+			: `git:${normalizeGitRepository(consumerRoot, effect.source.locator.repository)}|${normalizeGitPath(effect.source.locator.path) ?? ""}`;
 	return JSON.stringify([
-		effect.source,
+		source,
 		effect.recipe,
 		effect.step,
 		effect.type,
@@ -417,7 +423,10 @@ async function applyInstallPlan(
 	}
 
 	const effects = new Map(
-		state.effects.map((effect) => [stateKey(effect), effect]),
+		state.effects.map((effect) => [
+			stateKey(plan.consumerRoot, effect),
+			effect,
+		]),
 	);
 	const workingTargets = new Map<string, Buffer | undefined>();
 	const artifactsByAction = new Map(
@@ -500,7 +509,7 @@ async function applyInstallPlan(
 				}
 				action.state = "ok";
 				const existing = effects.get(
-					stateKey({
+					stateKey(plan.consumerRoot, {
 						source: custom.source,
 						recipe: custom.recipe,
 						step: custom.step,
@@ -509,7 +518,7 @@ async function applyInstallPlan(
 				);
 				const effect = customEffect({ ...custom, prepared });
 				if (!sameEffect(existing, effect)) {
-					effects.set(stateKey(effect), effect);
+					effects.set(stateKey(plan.consumerRoot, effect), effect);
 					envelope.changed =
 						(await persistState(plan.consumerRoot, {
 							schemaVersion: 1,
@@ -552,7 +561,7 @@ async function applyInstallPlan(
 			continue;
 		try {
 			const existing = effects.get(
-				stateKey({
+				stateKey(plan.consumerRoot, {
 					source: artifact.source,
 					recipe: artifact.recipe,
 					step: artifact.step,
@@ -580,7 +589,7 @@ async function applyInstallPlan(
 				existing,
 			);
 			if (!sameEffect(existing, effect)) {
-				effects.set(stateKey(effect), effect);
+				effects.set(stateKey(plan.consumerRoot, effect), effect);
 				envelope.changed =
 					(await persistState(plan.consumerRoot, {
 						schemaVersion: 1,
@@ -649,7 +658,7 @@ export async function runUninstall(
 	}
 	const plan = await planLocalInstall(
 		root,
-		true,
+		options.force ?? false,
 		"none",
 		{
 			allowCustom: options.allowCustom,
@@ -687,7 +696,10 @@ async function applyUninstallPlan(
 		return { ...finish(envelope), exitCode: 130 };
 	}
 	const effects = new Map(
-		state.effects.map((effect) => [stateKey(effect), effect]),
+		state.effects.map((effect) => [
+			stateKey(plan.consumerRoot, effect),
+			effect,
+		]),
 	);
 	for (const effect of state.effects) {
 		if (effect.type === "custom") continue;
@@ -705,7 +717,7 @@ async function applyUninstallPlan(
 	}
 	const customByKey = new Map(
 		plan.customSteps.map((custom) => [
-			stateKey({
+			stateKey(plan.consumerRoot, {
 				source: custom.source,
 				recipe: custom.recipe,
 				step: custom.step,
@@ -718,11 +730,28 @@ async function applyUninstallPlan(
 	let cancelled = false;
 	for (const effect of [...state.effects].reverse()) {
 		if (effect.type !== "custom") continue;
-		const custom = customByKey.get(stateKey(effect));
-		if (custom === undefined) continue;
+		const custom = customByKey.get(stateKey(plan.consumerRoot, effect));
+		if (custom === undefined) {
+			envelope.diagnostics.push({
+				code: "custom-effect-unmatched",
+				severity: "warning",
+				message:
+					"Installation record Custom effect has no matching current Custom step; the effect was preserved",
+				source:
+					effect.source.provider === "local"
+						? effect.source.locator.path
+						: effect.source.locator.repository,
+				recipe: effect.recipe,
+				step: effect.step,
+			});
+			continue;
+		}
+		if (custom.prepared === undefined) {
+			if (custom.uninstallUnsupported !== true) continue;
+		}
 		if (
-			custom.prepared === undefined ||
-			custom.prepared.uninstall === undefined
+			custom.uninstallUnsupported === true ||
+			custom.prepared?.uninstall === undefined
 		) {
 			envelope.diagnostics.push({
 				code: "uninstall-unsupported",
@@ -745,7 +774,7 @@ async function applyUninstallPlan(
 			custom.action.state =
 				outcome.result.status === "ok" ? "ok" : outcome.result.status;
 			if (outcome.result.status === "ok") {
-				effects.delete(stateKey(effect));
+				effects.delete(stateKey(plan.consumerRoot, effect));
 				envelope.changed =
 					(await persistState(plan.consumerRoot, {
 						schemaVersion: 1,

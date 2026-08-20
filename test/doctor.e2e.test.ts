@@ -15,13 +15,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify } from "yaml";
 import type { DoctorEnvelope } from "../src/doctor.ts";
 import { planLocalInstall } from "../src/doctor.ts";
 import {
 	GitSourceError,
 	isGitRevisionAllowed,
+	isRepositoryUrl,
 	materializeGitSource,
+	normalizeGitRepository,
 	resolveGitSelector,
 } from "../src/git.ts";
 import { runInstall } from "../src/install.ts";
@@ -32,6 +34,14 @@ const cliPath = join(projectRoot, "src", "cli.ts");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 let installedRoot: string | undefined;
 let installedBinPromise: Promise<string> | undefined;
+
+test("recognizes SCP Git locators without changing local path resolution", () => {
+	const root = join(tmpdir(), "tbboot-git-root");
+	const scp = "git@github.com:TalbyAI/tbboot.git";
+	assert.equal(isRepositoryUrl(scp), true);
+	assert.equal(normalizeGitRepository(root, scp), scp);
+	assert.equal(normalizeGitRepository(root, "./source"), join(root, "source"));
+});
 
 type Fixture = {
 	root: string;
@@ -2515,6 +2525,22 @@ test("uninstall preserves Custom effects without an uninstall handler", async ()
 			fixture.consumerRoot,
 		]);
 		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		const statePath = join(fixture.consumerRoot, ".tbboot", "state.yaml");
+		const installedState = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{
+				type: string;
+				source: Record<string, unknown>;
+			}>;
+		};
+		const customEffect = installedState.effects.find(
+			({ type }) => type === "custom",
+		);
+		assert.ok(customEffect);
+		customEffect.source = {
+			locator: customEffect.source.locator,
+			provider: customEffect.source.provider,
+		};
+		await writeFile(statePath, stringify(installedState));
 
 		const uninstall = await runWritableCli(fixture, [
 			"uninstall",
@@ -2536,7 +2562,7 @@ test("uninstall preserves Custom effects without an uninstall handler", async ()
 			code: "uninstall-unsupported",
 			severity: "warning",
 			message: "Custom step does not declare an uninstall operation",
-			source: fixture.sourceRoot,
+			source: await realpath(fixture.sourceRoot),
 			recipe: "custom",
 			step: 1,
 		});
@@ -2550,6 +2576,65 @@ test("uninstall preserves Custom effects without an uninstall handler", async ()
 			state.effects.some(({ type }) => type === "custom"),
 			true,
 		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall reports Custom effects with no matching current step", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: true };\"",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		await rm(join(fixture.sourceRoot, "custom", "recipe.yaml"));
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			status: string;
+			diagnostics: Array<{ code: string; severity: string }>;
+		}>(uninstall.stdout);
+		assert.deepEqual(envelope.diagnostics.at(-1), {
+			code: "custom-effect-unmatched",
+			severity: "warning",
+			message:
+				"Installation record Custom effect has no matching current Custom step; the effect was preserved",
+			source: "../source",
+			recipe: "custom",
+			step: 1,
+		});
 	} finally {
 		await fixture.cleanup();
 	}
