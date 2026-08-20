@@ -373,6 +373,53 @@ test("persistent trust is scoped to the Git Source revision", async () => {
 	}
 });
 
+test("requires a Git Source revision before checking or saving trust", async () => {
+	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-git-revision-"));
+	const consumerRoot = join(root, "consumer");
+	const sourceRoot = join(root, "source");
+	const recipeRoot = join(sourceRoot, "recipe");
+	const profileRoot = join(root, "profile");
+	const trustPath = join(profileRoot, ".tbboot", "trust.yaml");
+	const trustBefore = "schemaVersion: 2\nsources: []\n";
+	try {
+		await mkdir(recipeRoot, { recursive: true });
+		await mkdir(consumerRoot);
+		await mkdir(join(profileRoot, ".tbboot"), { recursive: true });
+		await writeFile(trustPath, trustBefore);
+		await assert.rejects(
+			prepareCustomStep(
+				{
+					type: "custom",
+					check: {
+						runtime: "node",
+						content: "return { status: 'ok', changed: false };",
+					},
+				},
+				{
+					consumerRoot,
+					sourceRoot,
+					recipeRoot,
+					recipe: "recipe",
+					step: 1,
+					source: {
+						provider: "git",
+						locator: { repository: "https://example.test/source.git" },
+					},
+					sourceFingerprint: "fingerprint",
+				},
+				{ profileRoot },
+			),
+			(error: unknown) =>
+				error instanceof Error &&
+				"code" in error &&
+				error.code === "custom-source-revision-missing",
+		);
+		assert.equal(await readFile(trustPath, "utf8"), trustBefore);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("prepares an in-Source script through a symlinked Source root", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-source-link-"));
 	const realSourceRoot = join(root, "source-real");

@@ -826,6 +826,13 @@ async function authorized(
 		options.cache?.set(key, true);
 		return;
 	}
+	if (
+		context.source.provider === "git" &&
+		(context.revision === undefined || context.revision.length === 0)
+	)
+		throw runnerError("custom-source-revision-missing", {
+			message: "Git Source authorization requires a resolved revision",
+		});
 	const trust = await readTrust(options);
 	const entry = trust.sources.find((candidate) => {
 		const same =
