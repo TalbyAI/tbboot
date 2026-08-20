@@ -2290,6 +2290,57 @@ test("unauthorized optional Custom Steps produce a warning and no process", asyn
 	}
 });
 
+test("unauthorized required Custom Steps fail preflight without process or artifacts", async () => {
+	const fixture = await createFixture();
+	const marker = join(fixture.consumerRoot, "unauthorized-custom-ran.txt");
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: |",
+				"        const { writeFile } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await writeFile(join(request.consumerRoot, 'unauthorized-custom-ran.txt'), 'ran\\n');",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n"),
+		);
+		const before = await snapshotTree(
+			fixture.consumerRoot,
+			fixture.sourceRoot,
+			fixture.profileRoot,
+		);
+		const { result, envelope } = await runDoctor(fixture);
+		assert.equal(result.exitCode, 1);
+		assert.equal(envelope.status, "error");
+		const customAction = envelope.actions.find(({ type }) => type === "custom");
+		assert.ok(customAction);
+		assert.equal(customAction.state, "error");
+		const diagnostic = envelope.diagnostics.find(
+			({ code }) => code === "custom-authorization-required",
+		);
+		assert.ok(diagnostic);
+		assert.equal(diagnostic.severity, "error");
+		assert.equal(existsSync(marker), false);
+		assert.deepEqual(
+			await snapshotTree(
+				fixture.consumerRoot,
+				fixture.sourceRoot,
+				fixture.profileRoot,
+			),
+			before,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("optional Custom preparation failures remain warnings", async () => {
 	const fixture = await createFixture();
 	try {

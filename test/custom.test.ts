@@ -243,9 +243,21 @@ test("temporary interactive authorization does not persist trust", async () => {
 	const root = await mkdtemp(join(tmpdir(), "tbboot-custom-trust-"));
 	const sourceRoot = join(root, "source");
 	const profileRoot = join(root, "profile");
+	const trustPath = join(profileRoot, ".tbboot", "trust.yaml");
+	const trustBefore = [
+		"schemaVersion: 1",
+		"sources:",
+		"  - source:",
+		"      provider: local",
+		"      locator:",
+		`        path: ${JSON.stringify(sourceRoot)}`,
+		"    fingerprint: previous-fingerprint",
+		"",
+	].join("\n");
 	const originalStdin = process.stdin;
 	await mkdir(join(sourceRoot, "recipe"), { recursive: true });
-	await mkdir(profileRoot);
+	await mkdir(join(profileRoot, ".tbboot"), { recursive: true });
+	await writeFile(trustPath, trustBefore);
 	Object.defineProperty(process, "stdin", {
 		configurable: true,
 		value: Readable.from(["y\n"]),
@@ -274,7 +286,8 @@ test("temporary interactive authorization does not persist trust", async () => {
 				persistTrust: false,
 			} satisfies CustomAuthorizationOptions,
 		);
-		assert.equal(existsSync(join(profileRoot, ".tbboot", "trust.yaml")), false);
+		assert.equal(existsSync(trustPath), true);
+		assert.equal(await readFile(trustPath, "utf8"), trustBefore);
 	} finally {
 		Object.defineProperty(process, "stdin", {
 			configurable: true,
