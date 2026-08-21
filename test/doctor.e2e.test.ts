@@ -2489,6 +2489,107 @@ test("runs an authorized inline Custom lifecycle and uninstalls its effect", asy
 	}
 });
 
+test("historical local Custom uninstall requires the current source fingerprint", async () => {
+	const fixture = await createFixture();
+	try {
+		await mkdir(join(fixture.sourceRoot, "custom"), { recursive: true });
+		await writeFile(
+			join(fixture.sourceRoot, "custom", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: |",
+				"        const { writeFile } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await writeFile(join(request.consumerRoot, 'custom.txt'), 'custom\\n');",
+				"        return { status: 'ok', changed: true };",
+				"    uninstall:",
+				"      runtime: node",
+				"      content: |",
+				"        const { rm } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await rm(join(request.consumerRoot, 'custom.txt'), { force: true });",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		const statePath = join(fixture.consumerRoot, ".tbboot", "state.yaml");
+		const state = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{
+				type: string;
+				sourceFingerprint: string;
+			}>;
+		};
+		const effect = state.effects.find(({ type }) => type === "custom");
+		assert.ok(effect);
+		await mkdir(join(fixture.profileRoot, ".tbboot"), { recursive: true });
+		await writeFile(
+			join(fixture.profileRoot, ".tbboot", "trust.yaml"),
+			stringify({
+				schemaVersion: 1,
+				sources: [
+					{
+						source: {
+							provider: "local",
+							locator: { path: fixture.sourceRoot },
+						},
+						fingerprint: effect.sourceFingerprint,
+					},
+				],
+			}),
+		);
+		await writeFile(
+			join(fixture.sourceRoot, "changed-after-install.txt"),
+			"changed\n",
+		);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			actions: Array<{ type: string; state: string }>;
+		}>(uninstall.stdout);
+		assert.equal(
+			envelope.actions.find(({ type }) => type === "custom")?.state,
+			"unsupported",
+		);
+		assert.equal(existsSync(join(fixture.consumerRoot, "custom.txt")), true);
+		const remaining = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{ type: string }>;
+		};
+		assert.equal(
+			remaining.effects.some(({ type }) => type === "custom"),
+			true,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("uninstall prepares only the Custom uninstall operation", async () => {
 	const fixture = await createFixture();
 	try {
@@ -2993,6 +3094,94 @@ test("install records effective sequence and uninstall uses updated order", asyn
 			actions.map(({ target, state }) => [target, state]),
 			[
 				["generated/first.txt", "removed"],
+				["generated/second.txt", "removed"],
+			],
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("legacy effects assign new sequences above index fallbacks", async () => {
+	const fixture = await createFixture();
+	try {
+		await rm(join(fixture.sourceRoot, "baseline"), { recursive: true });
+		await writeRecipe(fixture.sourceRoot, "ordered", [
+			{
+				input: "files/first.txt",
+				inputContent: "first\n",
+				target: "generated/first.txt",
+			},
+			{
+				input: "files/second.txt",
+				inputContent: "second\n",
+				target: "generated/second.txt",
+			},
+			{
+				input: "files/third.txt",
+				inputContent: "third\n",
+				target: "generated/third.txt",
+			},
+		]);
+		assert.equal(
+			(
+				await runWritableCli(fixture, [
+					"install",
+					"--root",
+					fixture.consumerRoot,
+				])
+			).exitCode,
+			0,
+		);
+
+		const statePath = join(fixture.consumerRoot, ".tbboot", "state.yaml");
+		const legacyState = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{ recipe: string; step: number; sequence?: number }>;
+		};
+		for (const effect of legacyState.effects) delete effect.sequence;
+		await writeFile(statePath, stringify(legacyState));
+		await writeFile(
+			join(fixture.sourceRoot, "ordered", "files", "first.txt"),
+			"updated\n",
+		);
+
+		const update = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(update.exitCode, 0, `${update.stdout}\n${update.stderr}`);
+
+		const updatedState = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{ recipe: string; step: number; sequence?: number }>;
+		};
+		assert.equal(
+			updatedState.effects.find(
+				({ recipe, step }) => recipe === "ordered" && step === 1,
+			)?.sequence,
+			4,
+		);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const actions = parseJsonOutput<{
+			actions: Array<{ recipe: string; target?: string; state: string }>;
+		}>(uninstall.stdout).actions.filter(({ recipe }) => recipe === "ordered");
+		assert.deepEqual(
+			actions.map(({ target, state }) => [target, state]),
+			[
+				["generated/first.txt", "removed"],
+				["generated/third.txt", "removed"],
 				["generated/second.txt", "removed"],
 			],
 		);

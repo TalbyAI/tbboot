@@ -1,3 +1,5 @@
+import { isAbsolute, relative, sep } from "node:path";
+
 type FinishEnvelope = {
 	status: "ok" | "warning" | "error";
 	diagnostics: readonly { severity: "error" | "warning" }[];
@@ -31,6 +33,14 @@ export function errorMessage(error: unknown): string {
 
 export function isNotFound(error: unknown): boolean {
 	return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
+}
+
+export function isInside(root: string, candidate: string): boolean {
+	const child = relative(root, candidate);
+	return (
+		child === "" ||
+		(child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
+	);
 }
 
 export function normalizeNewlines(value: string): string {

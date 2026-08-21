@@ -8,7 +8,7 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { stringify } from "yaml";
 import type {
 	CustomStateEffect,
@@ -20,6 +20,7 @@ import type {
 } from "./contract.ts";
 import { validateDocument } from "./contract.ts";
 import {
+	sourceFingerprint as calculateSourceFingerprint,
 	isCancellation,
 	type PreparedCustomOperation,
 	prepareCustomStep,
@@ -41,6 +42,7 @@ import {
 import {
 	errorMessage,
 	finish,
+	isInside,
 	isNotFound,
 	normalizeNewlines,
 } from "./shared.ts";
@@ -280,11 +282,14 @@ function sameEffect(
 		const { sequence: _sequence, ...rest } = effect;
 		return rest as StateEffect;
 	};
-	return JSON.stringify(withoutSequence(left)) === JSON.stringify(right);
+	return (
+		JSON.stringify(withoutSequence(left)) ===
+		JSON.stringify(withoutSequence(right))
+	);
 }
 
 function nextSequence(state: StateDocument): number {
-	let max = 0;
+	let max = state.effects.length;
 	for (const effect of state.effects) {
 		if (effect.sequence !== undefined) max = Math.max(max, effect.sequence);
 	}
@@ -718,14 +723,6 @@ function uninstallAction(effect: StateEffect): ArtifactAction {
 	};
 }
 
-function isInside(root: string, candidate: string): boolean {
-	const child = relative(root, candidate);
-	return (
-		child === "" ||
-		(child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
-	);
-}
-
 async function targetPath(
 	root: string,
 	target: string,
@@ -886,7 +883,10 @@ async function historicalCustom(
 				step: effect.step,
 				source: effect.source,
 				revision: effect.revision,
-				sourceFingerprint: effect.sourceFingerprint,
+				sourceFingerprint:
+					effect.source.provider === "local"
+						? await calculateSourceFingerprint(sourceRoot)
+						: effect.sourceFingerprint,
 			},
 			{
 				allowCustom: options.allowCustom,
@@ -927,6 +927,7 @@ async function applyUninstallState(
 	root: string,
 	state: StateDocument,
 	options: UninstallOptions,
+	initialDiagnostics: readonly Diagnostic[],
 ): Promise<UninstallResult> {
 	const envelope: UninstallEnvelope = {
 		schemaVersion: 1,
@@ -934,7 +935,7 @@ async function applyUninstallState(
 		status: "ok",
 		changed: false,
 		actions: [],
-		diagnostics: [],
+		diagnostics: [...initialDiagnostics],
 	};
 	if (state.effects.length === 0) return finish(envelope);
 	const consumerRoot = resolve(root);
@@ -1022,7 +1023,22 @@ async function applyUninstallState(
 				});
 				continue;
 			}
-			const current = await readFile(target.path);
+			let current: Buffer;
+			try {
+				current = await readFile(target.path);
+			} catch (error) {
+				action.state = "blocked";
+				envelope.diagnostics.push({
+					code: "target-read",
+					severity: "error",
+					message: `Unable to read the target: ${errorMessage(error)}`,
+					source: effectSource(effect),
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({ effect, action, optional: false, status: "blocked" });
+				continue;
+			}
 			if (effect.type === "file") {
 				if (!effect.created) {
 					action.state = "preserved-preexisting";
@@ -1073,10 +1089,10 @@ async function applyUninstallState(
 				});
 				continue;
 			}
-			if (inspection.state === "conflict" || inspection.range === undefined) {
+			if (inspection.state === "conflict") {
 				action.state = "blocked";
 				envelope.diagnostics.push({
-					code: inspection.code ?? "incomplete-fragment",
+					code: inspection.code,
 					severity: "error",
 					message: "Managed fragment structure is unsafe to reconcile",
 					source: effectSource(effect),
@@ -1196,10 +1212,25 @@ async function applyUninstallState(
 				if (record.effect.type === "file") {
 					await unlink(record.targetPath);
 				} else if (record.fragmentRange !== undefined) {
-					const current = await readFile(record.targetPath);
+					if (record.effect.type !== "file-fragment")
+						throw new Error("Invalid fragment uninstall record");
+					const verified = await targetPath(consumerRoot, record.effect.target);
+					if ("error" in verified || verified.missing)
+						throw new Error("Target changed after preflight");
+					const current = await readFile(verified.path);
+					const inspection = inspectManagedBlock(current, record.effect.marker);
+					if (inspection.state !== "present")
+						throw new Error("Managed fragment changed after preflight");
+					if (
+						sha256(
+							current.subarray(inspection.range.start, inspection.range.end),
+						) !== record.effect.artifactFingerprint &&
+						!(options.force ?? false)
+					)
+						throw new Error("Managed fragment drifted after preflight");
 					await writeFile(
-						record.targetPath,
-						removeManagedBlock(current, record.fragmentRange),
+						verified.path,
+						removeManagedBlock(current, inspection.range),
 					);
 				}
 				record.action.state = "removed";
@@ -1273,5 +1304,5 @@ export async function runUninstall(
 		diagnostics.some(({ severity }) => severity === "error")
 	)
 		return finish(envelope);
-	return applyUninstallState(resolve(root), state, options);
+	return applyUninstallState(resolve(root), state, options, diagnostics);
 }

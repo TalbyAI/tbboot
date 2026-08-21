@@ -2,8 +2,9 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, resolve } from "node:path";
 import type { GitSelector, GitSourceReference } from "./contract.ts";
+import { isInside } from "./shared.ts";
 
 type GitError = Error & { code?: number | string; stdout?: string | Buffer };
 
@@ -501,11 +502,6 @@ function sourcePath(repositoryRoot: string, path: string | undefined): string {
 	return normalized === undefined
 		? repositoryRoot
 		: join(repositoryRoot, ...normalized.split("/"));
-}
-
-function isInside(root: string, candidate: string): boolean {
-	const child = relative(root, candidate);
-	return child === "" || (child !== ".." && !child.startsWith(`..${sep}`));
 }
 
 async function repositoryPath(

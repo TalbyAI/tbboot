@@ -1,14 +1,6 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import {
-	basename,
-	dirname,
-	isAbsolute,
-	join,
-	relative,
-	resolve,
-	sep,
-} from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type {
 	Diagnostic,
 	DocumentKind,
@@ -43,6 +35,7 @@ import {
 import {
 	errorMessage,
 	finish,
+	isInside,
 	isNotFound,
 	normalizeNewlines,
 } from "./shared.ts";
@@ -186,14 +179,6 @@ function diagnostic(
 		...(context.recipe === undefined ? {} : { recipe: context.recipe }),
 		...(context.step === undefined ? {} : { step: context.step }),
 	};
-}
-
-function isInside(root: string, candidate: string): boolean {
-	const child = relative(root, candidate);
-	return (
-		child === "" ||
-		(child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
-	);
 }
 
 async function realPathWithMissing(candidate: string): Promise<string> {
@@ -631,11 +616,13 @@ type ManagedBlockScan = {
 	range?: { start: number; end: number };
 };
 
-export type ManagedBlockInspection = {
-	state: "missing" | "present" | "conflict";
-	code?: "fragment-marker-collision" | "incomplete-fragment";
-	range?: { start: number; end: number };
-};
+export type ManagedBlockInspection =
+	| { state: "missing" }
+	| { state: "present"; range: { start: number; end: number } }
+	| {
+			state: "conflict";
+			code: "fragment-marker-collision" | "incomplete-fragment";
+	  };
 
 function exactMarkerOffsets(
 	bytes: Buffer,
@@ -762,10 +749,10 @@ function fragmentState(
 	const targetBytes = Buffer.from(text);
 	const inspection = inspectManagedBlock(targetBytes, marker);
 	if (inspection.state === "conflict")
-		return { state: "conflict", code: inspection.code as string };
+		return { state: "conflict", code: inspection.code };
 	if (inspection.state === "missing")
 		return { state: "missing", code: "fragment-missing" };
-	const range = inspection.range as { start: number; end: number };
+	const range = inspection.range;
 	const actual = targetBytes.subarray(range.start, range.end).toString("utf8");
 	return actual === expected
 		? { state: "satisfied" }
