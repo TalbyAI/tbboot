@@ -288,6 +288,7 @@
           "properties": {
             "source": { "$ref": "#/$defs/sourceReference" },
             "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sequence": { "$ref": "#/$defs/positiveInteger" },
             "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
             "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
             "step": { "$ref": "#/$defs/positiveInteger" },
@@ -307,6 +308,7 @@
           "properties": {
             "source": { "$ref": "#/$defs/sourceReference" },
             "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sequence": { "$ref": "#/$defs/positiveInteger" },
             "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
             "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
             "step": { "$ref": "#/$defs/positiveInteger" },
@@ -326,6 +328,7 @@
           "properties": {
             "source": { "$ref": "#/$defs/sourceReference" },
             "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sequence": { "$ref": "#/$defs/positiveInteger" },
             "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
             "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
             "step": { "$ref": "#/$defs/positiveInteger" },

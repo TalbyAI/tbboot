@@ -2610,6 +2610,7 @@ test("uninstall preserves Custom effects without an uninstall handler", async ()
 		const envelope = parseJsonOutput<{
 			status: string;
 			diagnostics: Array<{ code: string; severity: string }>;
+			actions: Array<{ state: string }>;
 		}>(uninstall.stdout);
 		assert.equal(envelope.status, "warning");
 		assert.deepEqual(envelope.diagnostics.at(-1), {
@@ -2679,6 +2680,7 @@ test("uninstall reports Custom effects with no matching current step", async () 
 		const envelope = parseJsonOutput<{
 			status: string;
 			diagnostics: Array<{ code: string; severity: string }>;
+			actions: Array<{ state: string }>;
 		}>(uninstall.stdout);
 		assert.deepEqual(envelope.diagnostics.at(-1), {
 			code: "custom-effect-unmatched",
@@ -2694,7 +2696,7 @@ test("uninstall reports Custom effects with no matching current step", async () 
 	}
 });
 
-test("uninstall reports unsupported built-in effects instead of hiding them", async () => {
+test("uninstall reconciles built-in effects from the Installation record", async () => {
 	const fixture = await createFixture();
 	try {
 		const install = await runWritableCli(fixture, [
@@ -2720,13 +2722,12 @@ test("uninstall reports unsupported built-in effects instead of hiding them", as
 		const envelope = parseJsonOutput<{
 			status: string;
 			diagnostics: Array<{ code: string; severity: string }>;
+			actions: Array<{ state: string }>;
 		}>(uninstall.stdout);
-		assert.equal(envelope.status, "warning");
-		assert.ok(
-			envelope.diagnostics.some(
-				({ code, severity }) =>
-					code === "uninstall-unsupported" && severity === "warning",
-			),
+		assert.equal(envelope.status, "ok");
+		assert.deepEqual(
+			envelope.actions.map(({ state }) => state),
+			["preserved-preexisting"],
 		);
 		const state = parseYaml(
 			await readFile(
@@ -2736,7 +2737,264 @@ test("uninstall reports unsupported built-in effects instead of hiding them", as
 		) as { effects: Array<{ type: string }> };
 		assert.equal(
 			state.effects.some(({ type }) => type === "file"),
+			false,
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "hello.txt"),
+				"utf8",
+			),
+			"hello\n",
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall reconciles historical File effects without the current Source", async () => {
+	const fixture = await createFixture();
+	try {
+		const target = join(fixture.consumerRoot, "generated", "hello.txt");
+		await rm(target);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		await rm(join(fixture.consumerRoot, "tbboot.yaml"));
+		await rm(fixture.sourceRoot, { recursive: true });
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			actions: Array<{ type: string; state: string }>;
+		}>(uninstall.stdout);
+		assert.deepEqual(envelope.actions, [
+			{
+				source: "../source",
+				recipe: "baseline",
+				step: 1,
+				type: "file",
+				target: "generated/hello.txt",
+				state: "removed",
+			},
+		]);
+		assert.equal(existsSync(target), false);
+		assert.deepEqual(
+			(
+				parseYaml(
+					await readFile(
+						join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+						"utf8",
+					),
+				) as { effects: unknown[] }
+			).effects,
+			[],
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall removes only the historical Managed block", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "fragment", [
+			{
+				type: "file-fragment",
+				input: "files/block.txt",
+				inputContent: "owned\n",
+				target: "AGENTS.md",
+			},
+		]);
+		const target = join(fixture.consumerRoot, "AGENTS.md");
+		await writeFile(target, "keep\n");
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+		const installed = await readFile(target, "utf8");
+
+		await rm(join(fixture.consumerRoot, "tbboot.yaml"));
+		await rm(fixture.sourceRoot, { recursive: true });
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			0,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const envelope = parseJsonOutput<{
+			actions: Array<{ recipe: string; state: string }>;
+		}>(uninstall.stdout);
+		assert.equal(
+			envelope.actions.find(({ recipe }) => recipe === "fragment")?.state,
+			"removed",
+		);
+		assert.equal(installed.includes("keep\n"), true);
+		assert.equal(await readFile(target, "utf8"), "keep\n");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall blocks drift, force removes owned drift, and never bypasses structure conflicts", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "fragment", [
+			{
+				type: "file-fragment",
+				input: "files/block.txt",
+				inputContent: "owned\n",
+				target: "AGENTS.md",
+			},
+		]);
+		const target = join(fixture.consumerRoot, "AGENTS.md");
+		await writeFile(target, "keep\n");
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0);
+		const installed = await readFile(target, "utf8");
+		await writeFile(target, installed.replace("owned", "changed"));
+
+		const blocked = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(blocked.exitCode, 1);
+		assert.equal(
+			parseJsonOutput<{ actions: Array<{ state: string }> }>(
+				blocked.stdout,
+			).actions.some(({ state }) => state === "blocked"),
 			true,
+		);
+		assert.match(await readFile(target, "utf8"), /changed/);
+
+		const forced = await runWritableCli(fixture, [
+			"uninstall",
+			"--force",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(forced.exitCode, 0, `${forced.stdout}\n${forced.stderr}`);
+		assert.equal(await readFile(target, "utf8"), "keep\n");
+
+		const reinstall = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(reinstall.exitCode, 0);
+		const duplicate = await readFile(target, "utf8");
+		await writeFile(target, `${duplicate}${duplicate}`);
+		const conflict = await runWritableCli(fixture, [
+			"uninstall",
+			"--force",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(conflict.exitCode, 1);
+		assert.match(await readFile(target, "utf8"), /managed-by/);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("install records effective sequence and uninstall uses updated order", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeRecipe(fixture.sourceRoot, "ordered", [
+			{
+				input: "files/first.txt",
+				inputContent: "first\n",
+				target: "generated/first.txt",
+			},
+			{
+				input: "files/second.txt",
+				inputContent: "second\n",
+				target: "generated/second.txt",
+			},
+		]);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0);
+		const statePath = join(fixture.consumerRoot, ".tbboot", "state.yaml");
+		const firstState = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{ recipe: string; step: number; sequence?: number }>;
+		};
+		const firstSequences = firstState.effects
+			.filter(({ recipe }) => recipe === "ordered")
+			.map(({ sequence }) => sequence);
+		assert.deepEqual(firstSequences, [2, 3]);
+
+		await writeFile(
+			join(fixture.sourceRoot, "ordered", "files", "first.txt"),
+			"updated\n",
+		);
+		const update = await runWritableCli(fixture, [
+			"install",
+			"--force",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(update.exitCode, 0);
+		const updatedState = parseYaml(await readFile(statePath, "utf8")) as {
+			effects: Array<{ recipe: string; step: number; sequence?: number }>;
+		};
+		assert.deepEqual(
+			updatedState.effects
+				.filter(({ recipe }) => recipe === "ordered")
+				.map(({ step, sequence }) => [step, sequence]),
+			[
+				[1, 4],
+				[2, 3],
+			],
+		);
+
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(uninstall.exitCode, 0);
+		const actions = parseJsonOutput<{
+			actions: Array<{ recipe: string; target?: string; state: string }>;
+		}>(uninstall.stdout).actions.filter(({ recipe }) => recipe === "ordered");
+		assert.deepEqual(
+			actions.map(({ target, state }) => [target, state]),
+			[
+				["generated/first.txt", "removed"],
+				["generated/second.txt", "removed"],
+			],
 		);
 	} finally {
 		await fixture.cleanup();
