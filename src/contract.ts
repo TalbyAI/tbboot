@@ -85,6 +85,7 @@ export type RecipeDocument = {
 export type FileStateEffect = {
 	source: SourceReference;
 	revision?: string;
+	sequence?: number;
 	sourceFingerprint: string;
 	recipe: string;
 	step: number;
@@ -97,6 +98,7 @@ export type FileStateEffect = {
 export type FileFragmentStateEffect = {
 	source: SourceReference;
 	revision?: string;
+	sequence?: number;
 	sourceFingerprint: string;
 	recipe: string;
 	step: number;
@@ -109,6 +111,7 @@ export type FileFragmentStateEffect = {
 export type CustomStateEffect = {
 	source: SourceReference;
 	revision?: string;
+	sequence?: number;
 	sourceFingerprint: string;
 	recipe: string;
 	step: number;

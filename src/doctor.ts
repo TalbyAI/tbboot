@@ -1,14 +1,6 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import {
-	basename,
-	dirname,
-	isAbsolute,
-	join,
-	relative,
-	resolve,
-	sep,
-} from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type {
 	Diagnostic,
 	DocumentKind,
@@ -43,6 +35,7 @@ import {
 import {
 	errorMessage,
 	finish,
+	isInside,
 	isNotFound,
 	normalizeNewlines,
 } from "./shared.ts";
@@ -57,7 +50,17 @@ type DiagnosticContext = Pick<
 >;
 export type ArtifactType = Exclude<Step["type"], "custom">;
 export type ArtifactState = "satisfied" | "missing" | "drift" | "conflict";
-export type ActionState = ArtifactState | "deferred" | "ok" | "error";
+export type ActionState =
+	| ArtifactState
+	| "deferred"
+	| "ok"
+	| "error"
+	| "removed"
+	| "already-absent"
+	| "preserved-preexisting"
+	| "unsupported"
+	| "blocked"
+	| "failed";
 
 export type ArtifactAction = {
 	source: string;
@@ -176,14 +179,6 @@ function diagnostic(
 		...(context.recipe === undefined ? {} : { recipe: context.recipe }),
 		...(context.step === undefined ? {} : { step: context.step }),
 	};
-}
-
-function isInside(root: string, candidate: string): boolean {
-	const child = relative(root, candidate);
-	return (
-		child === "" ||
-		(child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
-	);
 }
 
 async function realPathWithMissing(candidate: string): Promise<string> {
@@ -621,6 +616,14 @@ type ManagedBlockScan = {
 	range?: { start: number; end: number };
 };
 
+export type ManagedBlockInspection =
+	| { state: "missing" }
+	| { state: "present"; range: { start: number; end: number } }
+	| {
+			state: "conflict";
+			code: "fragment-marker-collision" | "incomplete-fragment";
+	  };
+
 function exactMarkerOffsets(
 	bytes: Buffer,
 	token: Buffer,
@@ -667,22 +670,15 @@ export function scanManagedBlock(
 	};
 }
 
-function fragmentState(
-	targetText: string,
-	inputText: string,
+export function inspectManagedBlock(
+	bytes: Buffer,
 	marker: string,
-): FragmentResult {
-	const text = normalizeNewlines(targetText);
+): ManagedBlockInspection {
+	const markerScan = scanManagedBlock(bytes, marker);
+	const text = normalizeNewlines(bytes.toString("utf8"));
 	const lines = text.split("\n");
-	const body = normalizeNewlines(inputText);
 	const start = `<!-- managed-by: ${marker} -->`;
 	const end = `<!-- end-managed-by: ${marker} -->`;
-	const expected = `${start}\n${body}${body.endsWith("\n") ? "" : "\n"}${end}`;
-	const targetBytes = Buffer.from(text);
-	const markerScan = scanManagedBlock(targetBytes, marker);
-	const starts = markerScan.starts;
-	const ends = markerScan.ends;
-
 	const managed = new Map<string, { starts: number; ends: number }>();
 	const markerStack: string[] = [];
 	let nestedMarker = false;
@@ -723,8 +719,7 @@ function fragmentState(
 	const hasUnmatchedDistinctMarker = [...managed.entries()]
 		.filter(([name]) => name !== marker)
 		.some(([, counts]) => counts.starts > 0 !== counts.ends > 0);
-
-	if (starts.length > 1 || ends.length > 1)
+	if (markerScan.starts.length > 1 || markerScan.ends.length > 1)
 		return { state: "conflict", code: "fragment-marker-collision" };
 	if (
 		malformedMarkerLine ||
@@ -732,16 +727,32 @@ function fragmentState(
 		nestedMarker ||
 		mismatchedMarker ||
 		markerStack.length > 0 ||
-		(starts.length === 1) !== (ends.length === 1)
-	) {
+		(markerScan.starts.length === 1) !== (markerScan.ends.length === 1)
+	)
 		return { state: "conflict", code: "incomplete-fragment" };
-	}
-	if (starts.length === 0)
-		return { state: "missing", code: "fragment-missing" };
+	if (markerScan.starts.length === 0) return { state: "missing" };
+	if (markerScan.range === undefined)
+		return { state: "conflict", code: "incomplete-fragment" };
+	return { state: "present", range: markerScan.range };
+}
 
-	const range = markerScan.range;
-	if (range === undefined)
-		return { state: "conflict", code: "incomplete-fragment" };
+function fragmentState(
+	targetText: string,
+	inputText: string,
+	marker: string,
+): FragmentResult {
+	const text = normalizeNewlines(targetText);
+	const body = normalizeNewlines(inputText);
+	const start = `<!-- managed-by: ${marker} -->`;
+	const end = `<!-- end-managed-by: ${marker} -->`;
+	const expected = `${start}\n${body}${body.endsWith("\n") ? "" : "\n"}${end}`;
+	const targetBytes = Buffer.from(text);
+	const inspection = inspectManagedBlock(targetBytes, marker);
+	if (inspection.state === "conflict")
+		return { state: "conflict", code: inspection.code };
+	if (inspection.state === "missing")
+		return { state: "missing", code: "fragment-missing" };
+	const range = inspection.range;
 	const actual = targetBytes.subarray(range.start, range.end).toString("utf8");
 	return actual === expected
 		? { state: "satisfied" }

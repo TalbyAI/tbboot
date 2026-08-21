@@ -20,6 +20,7 @@ import {
 	type TrustDocument,
 	validateDocument,
 } from "./contract.ts";
+import { isInside } from "./shared.ts";
 
 const execFileAsync = promisify(execFile);
 export const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -586,14 +587,6 @@ export async function runHandler(options: {
 	} finally {
 		cleanup();
 	}
-}
-
-function isInside(root: string, candidate: string): boolean {
-	const child = relative(root, candidate);
-	return (
-		child === "" ||
-		(child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
-	);
 }
 
 async function scriptPath(

@@ -1,9 +1,18 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	realpath,
+	rename,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { stringify } from "yaml";
 import type {
 	CustomStateEffect,
+	CustomStep,
 	Diagnostic,
 	LockfileDocument,
 	StateDocument,
@@ -11,21 +20,29 @@ import type {
 } from "./contract.ts";
 import { validateDocument } from "./contract.ts";
 import {
+	sourceFingerprint as calculateSourceFingerprint,
 	isCancellation,
 	type PreparedCustomOperation,
+	prepareCustomStep,
 	runPreparedOperation,
 } from "./custom.ts";
 import {
 	type ArtifactAction,
+	inspectManagedBlock,
 	type LocalInstallPlan,
 	type PlannedArtifact,
 	planLocalInstall,
 	scanManagedBlock,
 } from "./doctor.ts";
-import { normalizeGitPath, normalizeGitRepository } from "./git.ts";
+import {
+	materializeGitSource,
+	normalizeGitPath,
+	normalizeGitRepository,
+} from "./git.ts";
 import {
 	errorMessage,
 	finish,
+	isInside,
 	isNotFound,
 	normalizeNewlines,
 } from "./shared.ts";
@@ -260,7 +277,23 @@ function sameEffect(
 	left: StateEffect | undefined,
 	right: StateEffect,
 ): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
+	if (left === undefined) return false;
+	const withoutSequence = (effect: StateEffect): StateEffect => {
+		const { sequence: _sequence, ...rest } = effect;
+		return rest as StateEffect;
+	};
+	return (
+		JSON.stringify(withoutSequence(left)) ===
+		JSON.stringify(withoutSequence(right))
+	);
+}
+
+function nextSequence(state: StateDocument): number {
+	let max = state.effects.length;
+	for (const effect of state.effects) {
+		if (effect.sequence !== undefined) max = Math.max(max, effect.sequence);
+	}
+	return max + 1;
 }
 
 async function persistState(
@@ -278,7 +311,15 @@ async function persistState(
 	}
 	await mkdir(stateDirectory, { recursive: true });
 	let changed = previousState !== nextState;
-	if (changed) await writeFile(statePath, nextState, "utf8");
+	if (changed) {
+		const temporaryPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
+		try {
+			await writeFile(temporaryPath, nextState, "utf8");
+			await rename(temporaryPath, statePath);
+		} finally {
+			await unlink(temporaryPath).catch(() => undefined);
+		}
+	}
 
 	const gitignorePath = join(stateDirectory, ".gitignore");
 	let gitignore = "";
@@ -429,6 +470,7 @@ async function applyInstallPlan(
 			effect,
 		]),
 	);
+	let sequence = nextSequence(state);
 	const workingTargets = new Map<string, Buffer | undefined>();
 	const artifactsByAction = new Map(
 		plan.artifacts.map((artifact) => [artifact.action, artifact]),
@@ -519,7 +561,8 @@ async function applyInstallPlan(
 				);
 				const effect = customEffect({ ...custom, prepared });
 				if (!sameEffect(existing, effect)) {
-					effects.set(stateKey(plan.consumerRoot, effect), effect);
+					const sequenced = { ...effect, sequence: sequence++ };
+					effects.set(stateKey(plan.consumerRoot, effect), sequenced);
 					envelope.changed =
 						(await persistState(plan.consumerRoot, {
 							schemaVersion: 1,
@@ -590,7 +633,8 @@ async function applyInstallPlan(
 				existing,
 			);
 			if (!sameEffect(existing, effect)) {
-				effects.set(stateKey(plan.consumerRoot, effect), effect);
+				const sequenced = { ...effect, sequence: sequence++ };
+				effects.set(stateKey(plan.consumerRoot, effect), sequenced);
 				envelope.changed =
 					(await persistState(plan.consumerRoot, {
 						schemaVersion: 1,
@@ -640,6 +684,603 @@ async function applyInstallPlan(
 	};
 }
 
+type HistoricalCustom = {
+	sourceRoot: string;
+	optional: boolean;
+	prepared?: Awaited<ReturnType<typeof prepareCustomStep>>;
+	cleanup?: () => Promise<void>;
+};
+
+type UninstallRecord = {
+	effect: StateEffect;
+	action: ArtifactAction;
+	optional: boolean;
+	status:
+		| "ready"
+		| "already-absent"
+		| "preserved-preexisting"
+		| "unsupported"
+		| "blocked";
+	targetPath?: string;
+	fragmentRange?: { start: number; end: number };
+	custom?: HistoricalCustom;
+};
+
+function effectSource(effect: StateEffect): string {
+	return effect.source.provider === "local"
+		? effect.source.locator.path
+		: `${effect.source.locator.repository}${effect.source.locator.path === undefined ? "" : `/${effect.source.locator.path}`}`;
+}
+
+function uninstallAction(effect: StateEffect): ArtifactAction {
+	return {
+		source: effectSource(effect),
+		recipe: effect.recipe,
+		step: effect.step,
+		type: effect.type,
+		...(effect.type === "custom" ? {} : { target: effect.target }),
+		state: "blocked",
+	};
+}
+
+async function targetPath(
+	root: string,
+	target: string,
+): Promise<{ path: string; missing: boolean } | { error: string }> {
+	const path = resolve(root, target);
+	if (!isInside(root, path))
+		return { error: "Target escapes the Consumer root" };
+	try {
+		const info = await lstat(path);
+		if (!info.isFile()) return { error: "Target is not a regular file" };
+		const canonicalRoot = await realpath(root);
+		if (!isInside(canonicalRoot, await realpath(path))) {
+			return { error: "Target escapes the Consumer root through a link" };
+		}
+		return { path, missing: false };
+	} catch (error) {
+		if (isNotFound(error)) return { path, missing: true };
+		return { error: errorMessage(error) };
+	}
+}
+
+function removeManagedBlock(
+	target: Buffer,
+	range: { start: number; end: number },
+): Buffer {
+	// ponytail: the state has no pre-install boundary, so remove one generated separator when it is distinguishable.
+	let start = range.start;
+	let end = range.end;
+	if (target[end] === 0x0d && target[end + 1] === 0x0a) end += 2;
+	else if (target[end] === 0x0a || target[end] === 0x0d) end += 1;
+	if (
+		start >= 2 &&
+		(target[start - 1] === 0x0a || target[start - 1] === 0x0d) &&
+		target[start - 1] === target[start - 2]
+	)
+		start -= 1;
+	return Buffer.concat([target.subarray(0, start), target.subarray(end)]);
+}
+
+async function historicalRecipeRoot(
+	sourceRoot: string,
+	recipe: string,
+): Promise<string> {
+	const recipeRoot = await realpath(join(sourceRoot, recipe));
+	if (!isInside(sourceRoot, recipeRoot))
+		throw new Error("Historical Recipe escapes the Source root");
+	return recipeRoot;
+}
+
+async function historicalSource(
+	root: string,
+	effect: StateEffect,
+): Promise<{ sourceRoot: string; cleanup?: () => Promise<void> }> {
+	if (effect.source.provider === "local") {
+		const sourceRoot = await realpath(
+			resolve(root, effect.source.locator.path),
+		);
+		return { sourceRoot };
+	}
+	if (effect.revision === undefined)
+		throw new Error("Historical Git Source revision is missing");
+	const materialized = await materializeGitSource(
+		root,
+		effect.source,
+		effect.revision,
+	);
+	return {
+		sourceRoot: materialized.sourceRoot,
+		cleanup: materialized.cleanup,
+	};
+}
+
+async function historicalCustom(
+	root: string,
+	effect: Extract<StateEffect, { type: "custom" }>,
+	options: UninstallOptions,
+	authCache: Map<string, boolean>,
+): Promise<{
+	custom: HistoricalCustom;
+	unsupported?: { code: string; message: string };
+}> {
+	let sourceRoot = effectSource(effect);
+	let cleanup: (() => Promise<void>) | undefined;
+	try {
+		const source = await historicalSource(root, effect);
+		sourceRoot = source.sourceRoot;
+		cleanup = source.cleanup;
+	} catch (error) {
+		return {
+			custom: { sourceRoot, optional: false },
+			unsupported: {
+				code: "uninstall-unsupported",
+				message: `Unable to recover historical Custom handler: ${errorMessage(error)}`,
+			},
+		};
+	}
+	if (!effect.uninstallSupported) {
+		try {
+			const recipeRoot = await historicalRecipeRoot(sourceRoot, effect.recipe);
+			await readFile(join(recipeRoot, "recipe.yaml"), "utf8");
+		} catch (error) {
+			if (isNotFound(error)) {
+				return {
+					custom: {
+						sourceRoot: effectSource(effect),
+						optional: false,
+						cleanup,
+					},
+					unsupported: {
+						code: "custom-effect-unmatched",
+						message:
+							"Installation record Custom effect has no matching current Custom step; the effect was preserved",
+					},
+				};
+			}
+		}
+		return {
+			custom: { sourceRoot, optional: false, cleanup },
+			unsupported: {
+				code: "uninstall-unsupported",
+				message: "Custom step does not declare an uninstall operation",
+			},
+		};
+	}
+	try {
+		const recipeRoot = await historicalRecipeRoot(sourceRoot, effect.recipe);
+		const recipePath = join(recipeRoot, "recipe.yaml");
+		const result = validateDocument<"recipe">({
+			kind: "recipe",
+			text: await readFile(recipePath, "utf8"),
+			document: "recipe.yaml",
+			source: sourceRoot,
+			recipe: effect.recipe,
+		});
+		if (result.value === undefined) {
+			throw new Error(
+				result.diagnostics[0]?.message ?? "Historical recipe is invalid",
+			);
+		}
+		const step = result.value.steps[effect.step - 1];
+		if (step?.type !== "custom" || step.uninstall === undefined) {
+			return {
+				custom: { sourceRoot, optional: step?.optional === true, cleanup },
+				unsupported: {
+					code: "custom-effect-unmatched",
+					message:
+						"Installation record Custom effect has no matching historical Custom uninstall handler; the effect was preserved",
+				},
+			};
+		}
+		const prepared = await prepareCustomStep(
+			step as CustomStep,
+			{
+				consumerRoot: root,
+				sourceRoot,
+				recipeRoot,
+				recipe: effect.recipe,
+				step: effect.step,
+				source: effect.source,
+				revision: effect.revision,
+				sourceFingerprint:
+					effect.source.provider === "local"
+						? await calculateSourceFingerprint(sourceRoot)
+						: effect.sourceFingerprint,
+			},
+			{
+				allowCustom: options.allowCustom,
+				profileRoot: options.profileRoot,
+				interactive: process.stdin.isTTY && process.stdout.isTTY,
+				persistTrust: false,
+				cache: authCache,
+			},
+			["uninstall"],
+		);
+		return {
+			custom: {
+				sourceRoot,
+				optional: step.optional === true,
+				prepared,
+				cleanup,
+			},
+		};
+	} catch (error) {
+		return {
+			custom: { sourceRoot, optional: false, cleanup },
+			unsupported: {
+				code: "uninstall-unsupported",
+				message: `Unable to prepare historical Custom handler: ${errorMessage(error)}`,
+			},
+		};
+	}
+}
+
+function orderedEffects(state: StateDocument): StateEffect[] {
+	return state.effects
+		.map((effect, index) => ({ effect, order: effect.sequence ?? index }))
+		.sort((left, right) => right.order - left.order)
+		.map(({ effect }) => effect);
+}
+
+async function applyUninstallState(
+	root: string,
+	state: StateDocument,
+	options: UninstallOptions,
+	initialDiagnostics: readonly Diagnostic[],
+): Promise<UninstallResult> {
+	const envelope: UninstallEnvelope = {
+		schemaVersion: 1,
+		command: "uninstall",
+		status: "ok",
+		changed: false,
+		actions: [],
+		diagnostics: [...initialDiagnostics],
+	};
+	if (state.effects.length === 0) return finish(envelope);
+	const consumerRoot = resolve(root);
+	const effects = new Map(
+		state.effects.map((effect) => [stateKey(consumerRoot, effect), effect]),
+	);
+	const records: UninstallRecord[] = [];
+	const cleanups: Array<() => Promise<void>> = [];
+	const authCache = new Map<string, boolean>();
+	let stderr = "";
+	try {
+		for (const effect of orderedEffects(state)) {
+			const action = uninstallAction(effect);
+			envelope.actions.push(action);
+			if (effect.type === "custom") {
+				const prepared = await historicalCustom(
+					consumerRoot,
+					effect,
+					options,
+					authCache,
+				);
+				if (prepared.custom.cleanup !== undefined)
+					cleanups.push(prepared.custom.cleanup);
+				if (prepared.custom.prepared?.uninstall !== undefined) {
+					action.source = prepared.custom.sourceRoot;
+					records.push({
+						effect,
+						action,
+						optional: prepared.custom.optional,
+						status: "ready",
+						custom: prepared.custom,
+					});
+					continue;
+				}
+				action.source = prepared.custom.sourceRoot;
+				action.state = "unsupported";
+				const unsupported = prepared.unsupported ?? {
+					code: "uninstall-unsupported",
+					message: "Historical Custom uninstall handler is unavailable",
+				};
+				envelope.diagnostics.push({
+					code: unsupported.code,
+					severity: "warning",
+					message: unsupported.message,
+					source: prepared.custom.sourceRoot,
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({
+					effect,
+					action,
+					optional: prepared.custom.optional,
+					status: "unsupported",
+					custom: prepared.custom,
+				});
+				continue;
+			}
+
+			const target = await targetPath(consumerRoot, effect.target);
+			if ("error" in target) {
+				action.state = "blocked";
+				envelope.diagnostics.push({
+					code: "target-read",
+					severity: "error",
+					message: target.error,
+					source: effectSource(effect),
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({
+					effect,
+					action,
+					optional: false,
+					status: "blocked",
+				});
+				continue;
+			}
+			if (target.missing) {
+				action.state = "already-absent";
+				records.push({
+					effect,
+					action,
+					optional: false,
+					status: "already-absent",
+				});
+				continue;
+			}
+			let current: Buffer;
+			try {
+				current = await readFile(target.path);
+			} catch (error) {
+				action.state = "blocked";
+				envelope.diagnostics.push({
+					code: "target-read",
+					severity: "error",
+					message: `Unable to read the target: ${errorMessage(error)}`,
+					source: effectSource(effect),
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({ effect, action, optional: false, status: "blocked" });
+				continue;
+			}
+			if (effect.type === "file") {
+				if (!effect.created) {
+					action.state = "preserved-preexisting";
+					records.push({
+						effect,
+						action,
+						optional: false,
+						status: "preserved-preexisting",
+					});
+					continue;
+				}
+				const drift = sha256(current) !== effect.artifactFingerprint;
+				if (drift && !(options.force ?? false)) {
+					action.state = "blocked";
+					envelope.diagnostics.push({
+						code: "file-drift",
+						severity: "error",
+						message: "Target bytes differ from the historically installed File",
+						source: effectSource(effect),
+						recipe: effect.recipe,
+						step: effect.step,
+					});
+					records.push({
+						effect,
+						action,
+						optional: false,
+						status: "blocked",
+					});
+					continue;
+				}
+				records.push({
+					effect,
+					action,
+					optional: false,
+					status: "ready",
+					targetPath: target.path,
+				});
+				continue;
+			}
+			const inspection = inspectManagedBlock(current, effect.marker);
+			if (inspection.state === "missing") {
+				action.state = "already-absent";
+				records.push({
+					effect,
+					action,
+					optional: false,
+					status: "already-absent",
+				});
+				continue;
+			}
+			if (inspection.state === "conflict") {
+				action.state = "blocked";
+				envelope.diagnostics.push({
+					code: inspection.code,
+					severity: "error",
+					message: "Managed fragment structure is unsafe to reconcile",
+					source: effectSource(effect),
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({
+					effect,
+					action,
+					optional: false,
+					status: "blocked",
+				});
+				continue;
+			}
+			const block = current.subarray(
+				inspection.range.start,
+				inspection.range.end,
+			);
+			if (
+				sha256(block) !== effect.artifactFingerprint &&
+				!(options.force ?? false)
+			) {
+				action.state = "blocked";
+				envelope.diagnostics.push({
+					code: "fragment-drift",
+					severity: "error",
+					message:
+						"Managed fragment differs from the historically installed block",
+					source: effectSource(effect),
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({
+					effect,
+					action,
+					optional: false,
+					status: "blocked",
+				});
+				continue;
+			}
+			records.push({
+				effect,
+				action,
+				optional: false,
+				status: "ready",
+				targetPath: target.path,
+				fragmentRange: inspection.range,
+			});
+		}
+
+		if (records.some(({ status }) => status === "blocked"))
+			return finish(envelope);
+		if (options.signal?.aborted) return { ...finish(envelope), exitCode: 130 };
+
+		const checkpoint = async (effect: StateEffect): Promise<void> => {
+			effects.delete(stateKey(consumerRoot, effect));
+			envelope.changed =
+				(await persistState(consumerRoot, {
+					schemaVersion: 1,
+					effects: [...effects.values()],
+				})) || envelope.changed;
+		};
+		let cancelled = false;
+		for (const record of records) {
+			if (options.signal?.aborted) {
+				cancelled = true;
+				break;
+			}
+			if (record.status === "unsupported") continue;
+			if (record.status === "already-absent") {
+				record.action.state = "already-absent";
+				await checkpoint(record.effect);
+				continue;
+			}
+			if (record.status === "preserved-preexisting") {
+				record.action.state = "preserved-preexisting";
+				await checkpoint(record.effect);
+				continue;
+			}
+			try {
+				if (record.effect.type === "custom") {
+					const prepared = record.custom?.prepared;
+					const operation = prepared?.uninstall;
+					if (prepared === undefined || operation === undefined) continue;
+					const outcome = await runPreparedOperation(
+						operation,
+						prepared.context,
+						options.signal,
+					);
+					stderr += outcome.stderr;
+					if (outcome.result.changed) envelope.changed = true;
+					if (outcome.result.status !== "ok") {
+						record.action.state = "failed";
+						envelope.diagnostics.push({
+							code:
+								outcome.result.status === "missing"
+									? "custom-missing"
+									: outcome.result.status === "drift"
+										? "custom-drift"
+										: "custom-error",
+							severity: record.optional ? "warning" : "error",
+							message:
+								outcome.result.message ??
+								`Custom uninstall returned ${outcome.result.status}`,
+							source: record.action.source,
+							recipe: record.effect.recipe,
+							step: record.effect.step,
+						});
+						if (!record.optional) break;
+						continue;
+					}
+					record.action.state = "removed";
+					await checkpoint(record.effect);
+					continue;
+				}
+				if (record.targetPath === undefined) continue;
+				if (record.effect.type === "file") {
+					const verified = await targetPath(consumerRoot, record.effect.target);
+					if ("error" in verified || verified.missing)
+						throw new Error("Target changed after preflight");
+					const current = await readFile(verified.path);
+					if (
+						sha256(current) !== record.effect.artifactFingerprint &&
+						!(options.force ?? false)
+					)
+						throw new Error("File drifted after preflight");
+					await unlink(verified.path);
+				} else if (record.fragmentRange !== undefined) {
+					if (record.effect.type !== "file-fragment")
+						throw new Error("Invalid fragment uninstall record");
+					const verified = await targetPath(consumerRoot, record.effect.target);
+					if ("error" in verified || verified.missing)
+						throw new Error("Target changed after preflight");
+					const current = await readFile(verified.path);
+					const inspection = inspectManagedBlock(current, record.effect.marker);
+					if (inspection.state !== "present")
+						throw new Error("Managed fragment changed after preflight");
+					if (
+						sha256(
+							current.subarray(inspection.range.start, inspection.range.end),
+						) !== record.effect.artifactFingerprint &&
+						!(options.force ?? false)
+					)
+						throw new Error("Managed fragment drifted after preflight");
+					await writeFile(
+						verified.path,
+						removeManagedBlock(current, inspection.range),
+					);
+				}
+				record.action.state = "removed";
+				await checkpoint(record.effect);
+			} catch (error) {
+				if (isCancellation(error)) {
+					cancelled = true;
+					envelope.diagnostics.push({
+						code: "custom-cancelled",
+						severity: "error",
+						message: "Custom uninstall was cancelled",
+						source: record.action.source,
+						recipe: record.effect.recipe,
+						step: record.effect.step,
+					});
+					break;
+				}
+				record.action.state = "failed";
+				envelope.diagnostics.push({
+					code: "uninstall-write",
+					severity: record.optional ? "warning" : "error",
+					message: `Unable to reconcile ${record.effect.type}: ${errorMessage(error)}`,
+					source: record.action.source,
+					recipe: record.effect.recipe,
+					step: record.effect.step,
+				});
+				if (!record.optional) break;
+			}
+		}
+		const result = finish(envelope);
+		return {
+			...result,
+			...(stderr === "" ? {} : { stderr }),
+			exitCode: cancelled ? 130 : result.exitCode,
+		};
+	} finally {
+		for (const cleanup of cleanups.reverse())
+			await cleanup().catch(() => undefined);
+	}
+}
+
 export async function runUninstall(
 	root: string,
 	options: UninstallOptions,
@@ -657,181 +1298,20 @@ export async function runUninstall(
 			exitCode: 130,
 		};
 	}
-	const plan = await planLocalInstall(
-		root,
-		options.force ?? false,
-		"none",
-		{
-			allowCustom: options.allowCustom,
-			profileRoot: options.profileRoot,
-			interactive: process.stdin.isTTY && process.stdout.isTTY,
-		},
-		"uninstall",
-	);
-	try {
-		return await applyUninstallPlan(plan, options);
-	} finally {
-		await plan.cleanup?.();
-	}
-}
-
-async function applyUninstallPlan(
-	plan: LocalInstallPlan,
-	options: UninstallOptions,
-): Promise<UninstallResult> {
+	const diagnostics: Diagnostic[] = [];
+	const state = await readState(resolve(root), diagnostics);
 	const envelope: UninstallEnvelope = {
 		schemaVersion: 1,
 		command: "uninstall",
 		status: "ok",
 		changed: false,
-		actions: plan.actions.filter(({ type }) => type === "custom"),
-		diagnostics: plan.diagnostics,
+		actions: [],
+		diagnostics,
 	};
-	const state = await readState(plan.consumerRoot, envelope.diagnostics);
 	if (
 		state === undefined ||
-		envelope.diagnostics.some(({ severity }) => severity === "error")
+		diagnostics.some(({ severity }) => severity === "error")
 	)
 		return finish(envelope);
-	if (options.signal?.aborted) {
-		return { ...finish(envelope), exitCode: 130 };
-	}
-	const effects = new Map(
-		state.effects.map((effect) => [
-			stateKey(plan.consumerRoot, effect),
-			effect,
-		]),
-	);
-	for (const effect of state.effects) {
-		if (effect.type === "custom") continue;
-		envelope.diagnostics.push({
-			code: "uninstall-unsupported",
-			severity: "warning",
-			message: `Uninstall does not remove ${effect.type} effects; the effect was preserved`,
-			source:
-				effect.source.provider === "local"
-					? effect.source.locator.path
-					: effect.source.locator.repository,
-			recipe: effect.recipe,
-			step: effect.step,
-		});
-	}
-	const customByKey = new Map(
-		plan.customSteps.map((custom) => [
-			stateKey(plan.consumerRoot, {
-				source: custom.source,
-				recipe: custom.recipe,
-				step: custom.step,
-				type: "custom",
-			}),
-			custom,
-		]),
-	);
-	let stderr = "";
-	let cancelled = false;
-	for (const effect of [...state.effects].reverse()) {
-		if (effect.type !== "custom") continue;
-		const custom = customByKey.get(stateKey(plan.consumerRoot, effect));
-		if (custom === undefined) {
-			envelope.diagnostics.push({
-				code: "custom-effect-unmatched",
-				severity: "warning",
-				message:
-					"Installation record Custom effect has no matching current Custom step; the effect was preserved",
-				source:
-					effect.source.provider === "local"
-						? effect.source.locator.path
-						: effect.source.locator.repository,
-				recipe: effect.recipe,
-				step: effect.step,
-			});
-			continue;
-		}
-		if (custom.prepared === undefined) {
-			if (custom.uninstallUnsupported !== true) continue;
-		}
-		if (
-			custom.uninstallUnsupported === true ||
-			custom.prepared?.uninstall === undefined
-		) {
-			envelope.diagnostics.push({
-				code: "uninstall-unsupported",
-				severity: "warning",
-				message: "Custom step does not declare an uninstall operation",
-				source: custom.sourceRoot,
-				recipe: custom.recipe,
-				step: custom.step,
-			});
-			continue;
-		}
-		try {
-			const outcome = await runPreparedOperation(
-				custom.prepared.uninstall,
-				custom.prepared.context,
-				options.signal,
-			);
-			stderr += outcome.stderr;
-			if (outcome.result.changed) envelope.changed = true;
-			custom.action.state =
-				outcome.result.status === "ok" ? "ok" : outcome.result.status;
-			if (outcome.result.status === "ok") {
-				effects.delete(stateKey(plan.consumerRoot, effect));
-				envelope.changed =
-					(await persistState(plan.consumerRoot, {
-						schemaVersion: 1,
-						effects: [...effects.values()],
-					})) || envelope.changed;
-				continue;
-			}
-			envelope.diagnostics.push({
-				code:
-					outcome.result.status === "missing"
-						? "custom-missing"
-						: outcome.result.status === "drift"
-							? "custom-drift"
-							: "custom-error",
-				severity: custom.optional ? "warning" : "error",
-				message:
-					outcome.result.message ??
-					`Custom uninstall returned ${outcome.result.status}`,
-				source: custom.sourceRoot,
-				recipe: custom.recipe,
-				step: custom.step,
-			});
-			if (!custom.optional) break;
-		} catch (error) {
-			stderr +=
-				typeof (error as { stderr?: unknown }).stderr === "string"
-					? (error as { stderr: string }).stderr
-					: "";
-			if (isCancellation(error)) {
-				cancelled = true;
-				envelope.diagnostics.push({
-					code: "custom-cancelled",
-					severity: "error",
-					message: "Custom uninstall was cancelled",
-					source: custom.sourceRoot,
-					recipe: custom.recipe,
-					step: custom.step,
-				});
-				break;
-			}
-			envelope.diagnostics.push({
-				code: "custom-error",
-				severity: custom.optional ? "warning" : "error",
-				message:
-					error instanceof Error ? error.message : "Custom uninstall failed",
-				source: custom.sourceRoot,
-				recipe: custom.recipe,
-				step: custom.step,
-			});
-			if (!custom.optional) break;
-		}
-	}
-	const result = finish(envelope);
-	return {
-		...result,
-		...(stderr === "" ? {} : { stderr }),
-		exitCode: cancelled ? 130 : result.exitCode,
-	};
+	return applyUninstallState(resolve(root), state, options, diagnostics);
 }
