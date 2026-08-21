@@ -2590,6 +2590,75 @@ test("historical local Custom uninstall requires the current source fingerprint"
 	}
 });
 
+test("uninstall preserves a File replaced by an earlier Custom effect", async () => {
+	const fixture = await createFixture();
+	try {
+		await rm(join(fixture.sourceRoot, "baseline"), { recursive: true });
+		const recipeRoot = join(fixture.sourceRoot, "reconcile");
+		await mkdir(join(recipeRoot, "files"), { recursive: true });
+		await writeFile(join(recipeRoot, "files", "owned.txt"), "owned\n");
+		await writeFile(
+			join(recipeRoot, "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: file",
+				"    input: files/owned.txt",
+				"    target: generated/owned.txt",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    install:",
+				"      runtime: node",
+				"      content: \"return { status: 'ok', changed: false };\"",
+				"    uninstall:",
+				"      runtime: node",
+				"      content: |",
+				"        const { writeFile } = await import('node:fs/promises');",
+				"        const { join } = await import('node:path');",
+				"        await writeFile(join(request.consumerRoot, 'generated/owned.txt'), 'replacement\\n');",
+				"        return { status: 'ok', changed: true };",
+				"",
+			].join("\n"),
+		);
+		const install = await runWritableCli(fixture, [
+			"install",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(install.exitCode, 0, `${install.stdout}\n${install.stderr}`);
+
+		const target = join(fixture.consumerRoot, "generated", "owned.txt");
+		const uninstall = await runWritableCli(fixture, [
+			"uninstall",
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+			"--root",
+			fixture.consumerRoot,
+		]);
+		assert.equal(
+			uninstall.exitCode,
+			1,
+			`${uninstall.stdout}\n${uninstall.stderr}`,
+		);
+		const actions = parseJsonOutput<{
+			actions: Array<{ recipe: string; type: string; state: string }>;
+		}>(uninstall.stdout).actions.filter(({ recipe }) => recipe === "reconcile");
+		assert.equal(
+			actions.find(({ type }) => type === "custom")?.state,
+			"removed",
+		);
+		assert.equal(actions.find(({ type }) => type === "file")?.state, "failed");
+		assert.equal(await readFile(target, "utf8"), "replacement\n");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("uninstall prepares only the Custom uninstall operation", async () => {
 	const fixture = await createFixture();
 	try {

@@ -1210,7 +1210,16 @@ async function applyUninstallState(
 				}
 				if (record.targetPath === undefined) continue;
 				if (record.effect.type === "file") {
-					await unlink(record.targetPath);
+					const verified = await targetPath(consumerRoot, record.effect.target);
+					if ("error" in verified || verified.missing)
+						throw new Error("Target changed after preflight");
+					const current = await readFile(verified.path);
+					if (
+						sha256(current) !== record.effect.artifactFingerprint &&
+						!(options.force ?? false)
+					)
+						throw new Error("File drifted after preflight");
+					await unlink(verified.path);
 				} else if (record.fragmentRange !== undefined) {
 					if (record.effect.type !== "file-fragment")
 						throw new Error("Invalid fragment uninstall record");
