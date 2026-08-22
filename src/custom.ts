@@ -2,13 +2,16 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	mkdir,
+	mkdtemp,
 	readdir,
 	readFile,
 	readlink,
 	realpath,
+	rm,
 	stat,
 	writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -43,7 +46,7 @@ export const RUNTIME_DEFINITIONS = Object.freeze({
 	pwsh: Object.freeze({
 		command: "pwsh",
 		range: ">=7.6 <8",
-		versionArgs: ["--version"],
+		versionArgs: ["-NoProfile", "--version"],
 	}),
 });
 
@@ -236,12 +239,20 @@ async function detectRuntimeUncached(
 	let versionText = process.version;
 	if (name === "pwsh") {
 		file = definition.command;
+		const temporaryProfile = await mkdtemp(
+			join(tmpdir(), "tbboot-runtime-profile-"),
+		);
 		try {
 			const result = await execFileAsync(
 				definition.command,
 				definition.versionArgs,
 				{
 					encoding: "utf8",
+					env: {
+						...process.env,
+						USERPROFILE: temporaryProfile,
+						HOME: temporaryProfile,
+					},
 					windowsHide: true,
 					shell: false,
 				},
@@ -256,6 +267,8 @@ async function detectRuntimeUncached(
 				message: `Runtime probe failed for ${name}`,
 				cause: error,
 			});
+		} finally {
+			await rm(temporaryProfile, { recursive: true, force: true });
 		}
 	}
 	return classifyRuntime(name, true, parseVersion(versionText), file, selector);
