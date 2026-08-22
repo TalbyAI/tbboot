@@ -479,6 +479,90 @@ test("MVP CLI runs external Node and PowerShell Custom handlers", async (t) => {
 	}
 });
 
+test("MVP CLI runs an erasable TypeScript Custom handler", async () => {
+	const fixture = await createFixture();
+	const allowCustom = ["--allow-custom", fixture.sourceRoot];
+	try {
+		const recipeRoot = join(fixture.sourceRoot, "baseline");
+		await mkdir(join(recipeRoot, "scripts"));
+		await writeFile(
+			join(recipeRoot, "scripts", "node.ts"),
+			[
+				'import { rm, writeFile } from "node:fs/promises";',
+				'import { join } from "node:path";',
+				"type Request = {",
+				'  operation: "check" | "install" | "uninstall";',
+				"  consumerRoot: string;",
+				"};",
+				'type Result = { status: "ok"; changed: boolean };',
+				"export default async function handler(request: Request): Promise<Result> {",
+				'  const target = join(request.consumerRoot, "external-ts.txt");',
+				'  if (request.operation === "install") await writeFile(target, "typescript\\n");',
+				'  if (request.operation === "uninstall") await rm(target, { force: true });',
+				'  console.error("external-ts-" + request.operation + "-log");',
+				'  return { status: "ok", changed: request.operation !== "check" };',
+				"}",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		await writeFile(
+			join(recipeRoot, "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      script: scripts/node.ts",
+				"    install:",
+				"      runtime: node",
+				"      script: scripts/node.ts",
+				"    uninstall:",
+				"      runtime: node",
+				"      script: scripts/node.ts",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const installed = await runCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+			...allowCustom,
+			"--json",
+		]);
+		assert.equal(installed.exitCode, 0, installed.stdout);
+		assert.equal(jsonEnvelope(installed, "install").changed, true);
+		assert.match(installed.stderr, /external-ts-(check|install)-log/);
+		assert.equal(
+			await readFile(join(fixture.consumerRoot, "external-ts.txt"), "utf8"),
+			"typescript\n",
+		);
+
+		const uninstalled = await runCli(fixture, [
+			"uninstall",
+			"--root",
+			fixture.consumerRoot,
+			...allowCustom,
+			"--json",
+		]);
+		assert.equal(uninstalled.exitCode, 0, uninstalled.stdout);
+		assert.equal(jsonEnvelope(uninstalled, "uninstall").changed, true);
+		assert.match(uninstalled.stderr, /external-ts-uninstall-log/);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "external-ts.txt"),
+				"utf8",
+			).catch(() => undefined),
+			undefined,
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("MVP CLI reports a Custom timeout through the JSON contract", async () => {
 	const fixture = await createFixture();
 	try {
