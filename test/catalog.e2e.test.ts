@@ -360,6 +360,88 @@ test("rejects duplicate Source identities within one Catalog", async () => {
 	}
 });
 
+test("case-normalizes Git identities for Catalog duplicate detection", async () => {
+	const fixture = await createFixture();
+	const registryPath = join(fixture.profileRoot, ".tbboot", "catalogs.yaml");
+	try {
+		for (const source of [
+			{
+				repository: "https://example.com/team.git",
+				firstPath: "Sources/API",
+				secondPath: "sources/api",
+				duplicatesOnWindows: true,
+			},
+			{
+				repository: "./Repo",
+				firstRepository: "./Repo",
+				secondRepository: "./repo",
+				firstPath: "Source",
+				secondPath: "Source",
+				duplicatesOnWindows: true,
+			},
+			{
+				firstRepository: "https://example.com/Team.git",
+				secondRepository: "https://example.com/team.git",
+				firstPath: "Source",
+				secondPath: "Source",
+				duplicatesOnWindows: false,
+			},
+		]) {
+			await rm(registryPath, { force: true });
+			await writeFile(
+				fixture.catalogPath,
+				[
+					"schemaVersion: 1",
+					"entries:",
+					"  - title: First",
+					"    description: First",
+					"    keywords: [one]",
+					"    source:",
+					"      provider: git",
+					"      locator:",
+					`        repository: ${source.firstRepository ?? source.repository}`,
+					`        path: ${source.firstPath}`,
+					"  - title: Second",
+					"    description: Second",
+					"    keywords: [two]",
+					"    source:",
+					"      provider: git",
+					"      locator:",
+					`        repository: ${source.secondRepository ?? source.repository}`,
+					`        path: ${source.secondPath}`,
+					"",
+				].join("\n"),
+				"utf8",
+			);
+			const result = await runCli(fixture, [
+				"catalog",
+				"add",
+				"team.yaml",
+				"--json",
+			]);
+			const shouldReject =
+				process.platform === "win32" && source.duplicatesOnWindows;
+			if (shouldReject) {
+				assert.equal(result.exitCode, 1);
+				assert.equal(
+					parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(
+						result.stdout,
+					).diagnostics[0]?.code,
+					"catalog-entry-duplicate-source",
+				);
+				assert.equal(
+					await readFile(registryPath).catch(() => undefined),
+					undefined,
+				);
+			} else {
+				assert.equal(result.exitCode, 0);
+			}
+		}
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("searches globally or within one Catalog with deterministic matching", async () => {
 	const fixture = await createFixture();
 	const secondPath = join(fixture.root, "other.yaml");
