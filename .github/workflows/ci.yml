@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         node-version: [24.12.x, 24.x]
+        pwsh-version: [7.6.0, latest]
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -26,13 +27,38 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
+      - name: Set up pinned PowerShell
+        if: matrix.pwsh-version != 'latest'
+        shell: pwsh
+        env:
+          PWSH_VERSION: ${{ matrix.pwsh-version }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "PowerShell-$env:PWSH_VERSION-win-x64.zip"
+          $install = Join-Path $env:RUNNER_TEMP "pwsh-$env:PWSH_VERSION"
+          $uri = "https://github.com/PowerShell/PowerShell/releases/download/v$env:PWSH_VERSION/PowerShell-$env:PWSH_VERSION-win-x64.zip"
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $install -Force
+          $install | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$install;$env:PATH"
+          $version = & (Join-Path $install "pwsh.exe") -NoProfile --version
+          if ($version -notmatch "PowerShell $([regex]::Escape($env:PWSH_VERSION))") {
+            throw "Expected PowerShell $env:PWSH_VERSION; got $version"
+          }
+
       - name: Verify MVP Windows x64 target
         shell: pwsh
         run: |
           $platform = node -p "process.platform"
           $arch = node -p "process.arch"
+          $pwsh = pwsh -NoProfile --version
           if ($platform -ne "win32" -or $arch -ne "x64") {
             throw "MVP acceptance requires win32/x64; got $platform/$arch"
+          }
+          $pwshVersion = [regex]::Match($pwsh, '(?<major>\d+)\.(?<minor>\d+)')
+          if (-not $pwshVersion.Success -or
+              [int]$pwshVersion.Groups['major'].Value -ne 7 -or
+              [int]$pwshVersion.Groups['minor'].Value -lt 6) {
+            throw "MVP acceptance requires PowerShell >=7.6 <8; got $pwsh"
           }
 
       - name: Install dependencies

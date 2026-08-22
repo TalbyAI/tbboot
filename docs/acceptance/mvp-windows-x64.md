@@ -10,7 +10,7 @@ does not add requirements.
 | --- | --- | --- |
 | Platform | Windows x64 only | `.github/workflows/ci.yml`: the acceptance job runs on `windows-latest` and fails unless Node reports `win32`/`x64`; the detailed suite also uses Windows-specific Git, process-tree, and path assertions. |
 | Node | `>=24.12 <25` | `.github/workflows/ci.yml`: runs the acceptance job on Node `24.12.x` and latest `24.x`; `test/mvp-acceptance.e2e.test.ts`: incompatible selector rejection. |
-| PowerShell | `pwsh >=7.6 <8` | `test/mvp-acceptance.e2e.test.ts`: installed runtime boundary and incompatible selector; `test/custom.test.ts`: inline and external PowerShell handlers. |
+| PowerShell | `pwsh >=7.6 <8` | `.github/workflows/ci.yml`: runs pinned PowerShell `7.6.0` and the runner's latest compatible `pwsh`; `test/mvp-acceptance.e2e.test.ts`: installed runtime boundary and incompatible selector; `test/custom.test.ts`: inline and external PowerShell handlers. |
 | Windows PowerShell | Not an MVP runtime | `test/mvp-acceptance.e2e.test.ts`: `windows-powershell` is rejected during schema validation. |
 
 ## Scenario matrix
