@@ -380,6 +380,13 @@ test("case-normalizes Git identities for Catalog duplicate detection", async () 
 				duplicatesOnWindows: true,
 			},
 			{
+				firstRepository: "file:///C:/Repo",
+				secondRepository: "file:///c:/repo",
+				firstPath: "Source",
+				secondPath: "Source",
+				duplicatesOnWindows: true,
+			},
+			{
 				firstRepository: "https://example.com/Team.git",
 				secondRepository: "https://example.com/team.git",
 				firstPath: "Source",

@@ -235,9 +235,11 @@ async function sourceIdentity(
 	}
 	const repository = normalizeGitRepository(base, source.locator.repository);
 	const path = normalizeGitPath(source.locator.path) ?? "";
-	const repositoryKey = isRepositoryUrl(repository)
-		? repository
-		: pathKey(repository);
+	const repositoryKey =
+		repository.toLowerCase().startsWith("file://") ||
+		!isRepositoryUrl(repository)
+			? pathKey(repository)
+			: repository;
 	return `git:${repositoryKey}|${pathKey(path)}`;
 }
 
