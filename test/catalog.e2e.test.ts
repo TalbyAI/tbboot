@@ -439,3 +439,84 @@ test("normalizes relative local Source paths and reports external Catalog change
 		await fixture.cleanup();
 	}
 });
+
+test("direct doctor and install ignore the Catalog registry", async () => {
+	const fixture = await createFixture();
+	const consumerRoot = join(fixture.root, "consumer");
+	const sourceRoot = join(fixture.root, "source");
+	try {
+		await mkdir(join(fixture.profileRoot, ".tbboot"), { recursive: true });
+		await writeFile(
+			join(fixture.profileRoot, ".tbboot", "catalogs.yaml"),
+			"schemaVersion: 2\n",
+			"utf8",
+		);
+		await mkdir(join(sourceRoot, "baseline", "files"), { recursive: true });
+		await mkdir(consumerRoot);
+		await writeFile(
+			join(sourceRoot, "source.yaml"),
+			"schemaVersion: 1\n",
+			"utf8",
+		);
+		await writeFile(
+			join(sourceRoot, "baseline", "files", "hello.txt"),
+			"hello\n",
+			"utf8",
+		);
+		await writeFile(
+			join(sourceRoot, "baseline", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: generated/hello.txt",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		await writeFile(
+			join(consumerRoot, "tbboot.yaml"),
+			[
+				"schemaVersion: 1",
+				"sources:",
+				"  - provider: local",
+				"    locator:",
+				"      path: ../source",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		await mkdir(join(consumerRoot, "generated"), { recursive: true });
+		await writeFile(
+			join(consumerRoot, "generated", "hello.txt"),
+			"hello\n",
+			"utf8",
+		);
+		const doctor = await runCli(fixture, [
+			"doctor",
+			"--root",
+			consumerRoot,
+			"--json",
+		]);
+		assert.equal(doctor.exitCode, 0);
+		assert.equal(
+			parseJsonOutput<{ command: string }>(doctor.stdout).command,
+			"doctor",
+		);
+		const dryRun = await runCli(fixture, [
+			"install",
+			"--root",
+			consumerRoot,
+			"--dry-run",
+			"--json",
+		]);
+		assert.equal(dryRun.exitCode, 0);
+		assert.equal(
+			parseJsonOutput<{ command: string }>(dryRun.stdout).command,
+			"install",
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
