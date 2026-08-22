@@ -1,7 +1,7 @@
 # Diseño: Catalogs locales para descubrir Sources
 
-**Issue:** #20  
-**Estado:** aprobado en la conversación; pendiente de revisión del documento escrito  
+**Issue:** #20
+**Estado:** aprobado en la conversación; pendiente de revisión del documento escrito
 **Fecha:** 2026-08-21
 
 ## Objetivo

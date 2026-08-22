@@ -67,7 +67,7 @@ test("rejects a registry with an empty name", () => {
 
 - [ ] **Step 2: Run the contract test and verify it fails.**
 
-Run: `node --test test/catalog-contract.test.ts`  
+Run: `node --test test/catalog-contract.test.ts`
 Expected: FAIL because `catalog-registry` is not yet a supported document kind.
 
 - [ ] **Step 3: Add the JSON schema and TypeScript types.**
@@ -97,7 +97,7 @@ with `CatalogDocument`.
 
 - [ ] **Step 4: Run the contract test and verify it passes.**
 
-Run: `node --test test/catalog-contract.test.ts`  
+Run: `node --test test/catalog-contract.test.ts`
 Expected: both tests pass.
 
 - [ ] **Step 5: Commit the contract slice.**
@@ -150,7 +150,7 @@ Catalog remains unchanged.
 
 - [ ] **Step 2: Run the E2E test and verify it fails.**
 
-Run: `node --test test/catalog.e2e.test.ts`  
+Run: `node --test test/catalog.e2e.test.ts`
 Expected: FAIL because the CLI rejects the `catalog` command.
 
 - [ ] **Step 3: Implement the registry and Catalog helpers.**
@@ -181,7 +181,7 @@ replacing the file after the complete new document is serialized.
 
 - [ ] **Step 4: Run the first E2E test and verify it passes.**
 
-Run: `node --test test/catalog.e2e.test.ts`  
+Run: `node --test test/catalog.e2e.test.ts`
 Expected: the add scenario passes and the original Catalog file is unchanged.
 
 - [ ] **Step 5: Add one behavior at a time with red-green checks.**
@@ -227,7 +227,7 @@ Assert exit code `2`, empty stdout, and usage on stderr for invalid cases.
 
 - [ ] **Step 2: Run the parser tests and verify they fail.**
 
-Run: `node --test test/catalog.e2e.test.ts`  
+Run: `node --test test/catalog.e2e.test.ts`
 Expected: FAIL because the current parser accepts only `doctor`, `install`, and
 `uninstall`.
 
@@ -251,7 +251,7 @@ before shared diagnostics in human mode.
 
 - [ ] **Step 4: Run the parser and command tests.**
 
-Run: `node --test test/catalog.e2e.test.ts`  
+Run: `node --test test/catalog.e2e.test.ts`
 Expected: all Catalog command and usage tests pass.
 
 - [ ] **Step 5: Commit the CLI slice.**
