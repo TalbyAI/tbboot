@@ -17,7 +17,11 @@ import {
 	type SourceReference,
 	validateDocument,
 } from "./contract.ts";
-import { normalizeGitPath, normalizeGitRepository } from "./git.ts";
+import {
+	isRepositoryUrl,
+	normalizeGitPath,
+	normalizeGitRepository,
+} from "./git.ts";
 import { errorMessage, finish, isNotFound } from "./shared.ts";
 
 export type CatalogCommand =
@@ -231,7 +235,12 @@ async function sourceIdentity(
 	}
 	const repository = normalizeGitRepository(base, source.locator.repository);
 	const path = normalizeGitPath(source.locator.path) ?? "";
-	return `git:${repository}|${path}`;
+	const repositoryKey =
+		repository.toLowerCase().startsWith("file://") ||
+		!isRepositoryUrl(repository)
+			? pathKey(repository)
+			: repository;
+	return `git:${repositoryKey}|${pathKey(path)}`;
 }
 
 async function readCatalog(path: string): Promise<LoadedCatalog> {
