@@ -15,6 +15,7 @@ export type DocumentKind =
 	| "source"
 	| "recipe"
 	| "catalog"
+	| "catalog-registry"
 	| "lockfile"
 	| "state"
 	| "trust";
@@ -51,6 +52,18 @@ export type GitSourceReference = {
 export type SourceReference = LocalSourceReference | GitSourceReference;
 export type SourceDependency = SourceReference & { name: string };
 export type ManifestDocument = { schemaVersion: 1; sources: SourceReference[] };
+export type CatalogEntry = {
+	title: string;
+	description: string;
+	keywords: string[];
+	source: SourceReference;
+};
+export type CatalogDocument = { schemaVersion: 1; entries: CatalogEntry[] };
+export type CatalogRegistryEntry = { name: string; path: string };
+export type CatalogRegistryDocument = {
+	schemaVersion: 1;
+	catalogs: CatalogRegistryEntry[];
+};
 export type SourceDocument = {
 	schemaVersion: 1;
 	dependencies?: SourceDependency[];
@@ -146,7 +159,8 @@ export type DocumentByKind = {
 	manifest: ManifestDocument;
 	source: SourceDocument;
 	recipe: RecipeDocument;
-	catalog: Record<string, unknown>;
+	catalog: CatalogDocument;
+	"catalog-registry": CatalogRegistryDocument;
 	lockfile: LockfileDocument;
 	state: StateDocument;
 	trust: TrustDocument;
@@ -176,6 +190,7 @@ const documentKinds: DocumentKind[] = [
 	"source",
 	"recipe",
 	"catalog",
+	"catalog-registry",
 	"lockfile",
 	"state",
 	"trust",

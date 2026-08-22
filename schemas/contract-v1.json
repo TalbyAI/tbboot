@@ -254,6 +254,26 @@
       },
       "additionalProperties": false
     },
+    "catalog-registry": {
+      "type": "object",
+      "required": ["schemaVersion", "catalogs"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "catalogs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "path"],
+            "properties": {
+              "name": { "$ref": "#/$defs/nonEmptyString" },
+              "path": { "$ref": "#/$defs/nonEmptyString" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "lockEntry": {
       "type": "object",
       "required": ["source", "fingerprint"],
