@@ -758,6 +758,122 @@ test("MVP CLI cancels Custom install at the process boundary and reconciles", as
 	}
 });
 
+test("MVP CLI persists required failure state and reconciles it later", async () => {
+	const fixture = await createFixture();
+	const allowCustom = ["--allow-custom", fixture.sourceRoot];
+	try {
+		await writeFile(
+			join(fixture.sourceRoot, "baseline", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: generated/before-failure.txt",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: 'return { status: \"ok\", changed: false };'",
+				"    install:",
+				"      runtime: node",
+				"      content: |",
+				'        if (request.operation === "install") {',
+				'          console.error("required-install-failure");',
+				'          return { status: "error", changed: false, message: "required failure" };',
+				"        }",
+				'        return { status: "ok", changed: false };',
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: generated/after-failure.txt",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const failed = await runCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+			...allowCustom,
+			"--json",
+		]);
+		assert.equal(failed.exitCode, 1, failed.stdout);
+		assert.match(failed.stderr, /required-install-failure/);
+		const failedEnvelope = jsonEnvelope(failed, "install");
+		assert.equal(failedEnvelope.status, "error");
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "before-failure.txt"),
+				"utf8",
+			),
+			"hello\n",
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "after-failure.txt"),
+				"utf8",
+			).catch(() => undefined),
+			undefined,
+		);
+		const partialState = await readFile(
+			join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+			"utf8",
+		);
+		assert.match(partialState, /step: 1/);
+		assert.doesNotMatch(partialState, /step: 2/);
+		assert.doesNotMatch(partialState, /step: 3/);
+
+		await writeFile(
+			join(fixture.sourceRoot, "baseline", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: generated/before-failure.txt",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: 'return { status: \"ok\", changed: false };'",
+				"    install:",
+				"      runtime: node",
+				"      content: 'return { status: \"ok\", changed: false };'",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: generated/after-failure.txt",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		const reconciled = await runCli(fixture, [
+			"install",
+			"--root",
+			fixture.consumerRoot,
+			...allowCustom,
+			"--json",
+		]);
+		assert.equal(reconciled.exitCode, 0, reconciled.stdout);
+		assert.equal(jsonEnvelope(reconciled, "install").status, "ok");
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "after-failure.txt"),
+				"utf8",
+			),
+			"hello\n",
+		);
+		const finalState = await readFile(
+			join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+			"utf8",
+		);
+		assert.equal((finalState.match(/step: [123]/g) ?? []).length, 3);
+		assert.equal((finalState.match(/step: 1/g) ?? []).length, 1);
+		assert.equal((finalState.match(/step: 2/g) ?? []).length, 1);
+		assert.equal((finalState.match(/step: 3/g) ?? []).length, 1);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test("MVP CLI lifecycle preserves read-only boundaries and ownership", async () => {
 	const fixture = await createFixture();
 	const allowCustom = ["--allow-custom", fixture.sourceRoot];
