@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   quality:
+    strategy:
+      matrix:
+        node-version: [24.12.x, 24.x]
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -20,8 +23,17 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version-file: package.json
+          node-version: ${{ matrix.node-version }}
           cache: npm
+
+      - name: Verify MVP Windows x64 target
+        shell: pwsh
+        run: |
+          $platform = node -p "process.platform"
+          $arch = node -p "process.arch"
+          if ($platform -ne "win32" -or $arch -ne "x64") {
+            throw "MVP acceptance requires win32/x64; got $platform/$arch"
+          }
 
       - name: Install dependencies
         run: npm ci

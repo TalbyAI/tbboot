@@ -34,7 +34,7 @@ type Envelope = {
 	status: "ok" | "warning" | "error";
 	changed: boolean;
 	actions: unknown[];
-	diagnostics: Array<{ code: string; severity: string }>;
+	diagnostics: Array<{ code: string; severity: string; message: string }>;
 };
 
 async function createFixture(): Promise<Fixture> {
@@ -211,30 +211,36 @@ async function runCliUntilFile(
 		child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
 	});
 	const deadline = Date.now() + 10_000;
-	while (Date.now() < deadline) {
-		if (
+	try {
+		while (Date.now() < deadline) {
+			if (
+				await readFile(readyPath).then(
+					() => true,
+					() => false,
+				)
+			)
+				break;
+			if (child.exitCode !== null) {
+				throw new Error(
+					`CLI exited before readiness: ${child.exitCode}\n${stdout}\n${stderr}`,
+				);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		assert.ok(
 			await readFile(readyPath).then(
 				() => true,
 				() => false,
-			)
-		)
-			break;
-		if (child.exitCode !== null) {
-			throw new Error(
-				`CLI exited before readiness: ${child.exitCode}\n${stdout}\n${stderr}`,
-			);
-		}
-		await new Promise((resolve) => setTimeout(resolve, 25));
+			),
+			"Custom process did not reach the cancellation readiness point",
+		);
+		if (preloadPath === undefined) child.kill("SIGINT");
+		return await closed;
+	} catch (error) {
+		if (child.exitCode === null) child.kill();
+		await closed.catch(() => undefined);
+		throw error;
 	}
-	assert.ok(
-		await readFile(readyPath).then(
-			() => true,
-			() => false,
-		),
-		"Custom process did not reach the cancellation readiness point",
-	);
-	if (preloadPath === undefined) child.kill("SIGINT");
-	return closed;
 }
 
 test("MVP runtime matrix accepts the supported Windows x64 boundary", async (t) => {
@@ -495,6 +501,53 @@ test("MVP CLI reports a Custom timeout through the JSON contract", async () => {
 			envelope.diagnostics.some(({ code }) => code === "custom-error"),
 			JSON.stringify(envelope),
 		);
+		assert.ok(
+			envelope.diagnostics.some(({ message }) => /timeout/i.test(message)),
+			JSON.stringify(envelope),
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("MVP CLI treats a timed-out optional Custom check as a warning", async () => {
+	const fixture = await createFixture();
+	try {
+		await writeFile(
+			join(fixture.sourceRoot, "baseline", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: custom",
+				"    optional: true",
+				"    check:",
+				"      runtime: node",
+				"      timeoutSeconds: 1",
+				"      content: 'await new Promise(() => setInterval(() => {}, 1000));'",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		const result = await runCli(fixture, [
+			"doctor",
+			"--root",
+			fixture.consumerRoot,
+			"--allow-custom",
+			fixture.sourceRoot,
+			"--json",
+		]);
+		assert.equal(result.exitCode, 0, result.stdout);
+		const envelope = jsonEnvelope(result);
+		assert.equal(envelope.status, "warning");
+		assert.ok(
+			envelope.diagnostics.some(
+				({ code, severity, message }) =>
+					code === "custom-error" &&
+					severity === "warning" &&
+					/timeout/i.test(message),
+			),
+			JSON.stringify(envelope),
+		);
 	} finally {
 		await fixture.cleanup();
 	}
@@ -524,6 +577,9 @@ test("MVP CLI cancels Custom install at the process boundary and reconciles", as
 				'        const { writeFile } = await import("node:fs/promises");',
 				'        await writeFile("cancel-ready", "ready\\n");',
 				"        await new Promise(() => setInterval(() => {}, 1000));",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: after-cancel.txt",
 				"",
 			].join("\n"),
 			"utf8",
@@ -549,7 +605,11 @@ test("MVP CLI cancels Custom install at the process boundary and reconciles", as
 			readyPath,
 			preloadPath,
 		);
-		assert.equal(cancelled.exitCode, 130, cancelled.stdout);
+		assert.equal(
+			cancelled.exitCode,
+			130,
+			`${cancelled.stdout}\n${cancelled.stderr}`,
+		);
 		assert.equal(
 			await readFile(
 				join(fixture.consumerRoot, "generated", "hello.txt"),
@@ -563,6 +623,13 @@ test("MVP CLI cancels Custom install at the process boundary and reconciles", as
 				"utf8",
 			),
 			/type: file/,
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "after-cancel.txt"),
+				"utf8",
+			).catch(() => undefined),
+			undefined,
 		);
 
 		await rm(readyPath, { force: true });

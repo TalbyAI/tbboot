@@ -8,8 +8,8 @@ does not add requirements.
 
 | Dimension | Contract | Evidence |
 | --- | --- | --- |
-| Platform | Windows x64 only | `test/mvp-acceptance.e2e.test.ts`: the runtime boundary test skips outside `win32`/`x64`; the detailed suite also uses Windows-specific Git, process-tree, and path assertions. |
-| Node | `>=24.12 <25` | `test/mvp-acceptance.e2e.test.ts`: supported boundary and incompatible selector; `test/custom.test.ts`: runtime detection. |
+| Platform | Windows x64 only | `.github/workflows/ci.yml`: the acceptance job runs on `windows-latest` and fails unless Node reports `win32`/`x64`; the detailed suite also uses Windows-specific Git, process-tree, and path assertions. |
+| Node | `>=24.12 <25` | `.github/workflows/ci.yml`: runs the acceptance job on Node `24.12.x` and latest `24.x`; `test/mvp-acceptance.e2e.test.ts`: incompatible selector rejection. |
 | PowerShell | `pwsh >=7.6 <8` | `test/mvp-acceptance.e2e.test.ts`: installed runtime boundary and incompatible selector; `test/custom.test.ts`: inline and external PowerShell handlers. |
 | Windows PowerShell | Not an MVP runtime | `test/mvp-acceptance.e2e.test.ts`: `windows-powershell` is rejected during schema validation. |
 
@@ -25,9 +25,9 @@ does not add requirements.
 | Transitive Source dependencies | `test/doctor.e2e.test.ts`: `Source dependencies resolve transitively, in order, and only once`; `Source dependency cycles fail preflight without writing artifacts`; `compatible transitive Git selectors converge independent of discovery order`. |
 | File Fragment ownership and structural safety | `test/doctor.e2e.test.ts`: `File Fragment normalizes line endings and detects missing, drift, and satisfied blocks`; `File Fragment structural failures conflict and distinct markers may share a target`; `force rejects nested Managed blocks and preserves non-UTF8 unrelated bytes`. |
 | Custom Node and PowerShell protocol | `test/mvp-acceptance.e2e.test.ts`: `MVP CLI runs external Node and PowerShell Custom handlers`; `test/custom.test.ts`: invalid output, stderr/stdout separation, and descendant termination. |
-| Custom authorization and revision-scoped trust | `test/custom.test.ts`: `temporary interactive authorization does not persist trust`; `persistent trust is scoped to the Git Source revision`; `test/doctor.e2e.test.ts`: required and optional unauthorized Custom preflight. |
+| Custom authorization and revision-scoped trust | `test/custom.test.ts`: adapter coverage for temporary and revision-scoped trust; `test/doctor.e2e.test.ts`: CLI-level required and optional unauthorized Custom preflight. |
 | Optional and required Steps | `test/doctor.e2e.test.ts`: `missing input is a conflict and optional missing input is a warning`; `optional Custom preparation failures remain warnings`. |
-| Timeout, cancellation, and process-tree cleanup | `test/mvp-acceptance.e2e.test.ts`: `MVP CLI reports a Custom timeout through the JSON contract`; `MVP CLI cancels Custom install at the process boundary and reconciles`; `test/custom.test.ts`: `terminates descendants of timed-out handlers`. |
+| Timeout, cancellation, and process-tree cleanup | `test/mvp-acceptance.e2e.test.ts`: required/optional timeout diagnostics and CLI process-boundary cancellation with later-Step suppression; `test/custom.test.ts`: adapter-level descendant termination. |
 | Read-only doctor and dry-run | `test/mvp-acceptance.e2e.test.ts`: `MVP CLI lifecycle preserves read-only boundaries and ownership`; `test/doctor.e2e.test.ts`: `install dry-run reports the complete plan and is read-only`. |
 | Install, idempotence, drift, and force | `test/mvp-acceptance.e2e.test.ts`: lifecycle smoke matrix; `test/doctor.e2e.test.ts`: `install blocks drift and force reconciles only the File`; `install creates distinct Managed blocks and force preserves unrelated content`. |
 | Uninstall order, ownership, unsupported Custom uninstall, and reconciliation | `test/mvp-acceptance.e2e.test.ts`: lifecycle smoke matrix; `test/doctor.e2e.test.ts`: `uninstall blocks drift, force removes owned drift, and never bypasses structure conflicts`; `uninstall preserves Custom effects without an uninstall handler`; `uninstall reconciles historical File effects without the current Source`. |
