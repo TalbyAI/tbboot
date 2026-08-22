@@ -239,7 +239,7 @@ The new file uses only type aliases, parameter annotations, and a return annotat
 Run:
 
 ```powershell
-node --test test/mvp-acceptance.e2e.test.ts --test-name-pattern "erasable TypeScript"
+node --test --test-name-pattern "erasable TypeScript" test/mvp-acceptance.e2e.test.ts
 ```
 
 Expected before the implementation change: the test fails if production Custom preparation rejects `.ts`, or passes if the already-integrated native Node path covers it. If it passes, keep the test as the missing production evidence and do not change `src/custom.ts`.
@@ -253,7 +253,7 @@ If the failure is a production `.ts` preparation or execution defect, trace the 
 Run:
 
 ```powershell
-node --test test/mvp-acceptance.e2e.test.ts --test-name-pattern "erasable TypeScript"
+node --test --test-name-pattern "erasable TypeScript" test/mvp-acceptance.e2e.test.ts
 npm run typecheck
 ```
 
@@ -406,7 +406,7 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
 Run:
 
 ```powershell
-node --test test/mvp-acceptance.e2e.test.ts --test-name-pattern "required failure state"
+node --test --test-name-pattern "required failure state" test/mvp-acceptance.e2e.test.ts
 ```
 
 Expected before a production correction: the test either passes against the existing checkpointing behavior or identifies the exact state/reconciliation defect. A failure caused by a stale assertion or invalid fixture is corrected in the test, not in production.
@@ -420,7 +420,7 @@ If the targeted test exposes a real defect, update the common install loop in `s
 Run:
 
 ```powershell
-node --test test/mvp-acceptance.e2e.test.ts --test-name-pattern "required failure state"
+node --test --test-name-pattern "required failure state" test/mvp-acceptance.e2e.test.ts
 ```
 
 Expected: PASS; first run has only step 0, second run has steps 0, 1, and 2 once each, and the later File is absent after the first run and present after the second.

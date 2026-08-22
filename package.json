@@ -19,6 +19,7 @@
     "build": "node --check src/cli.ts",
     "doctor": "node src/cli.ts doctor",
     "test": "node --test \"test/**/*.test.ts\"",
+    "test:coverage": "node --experimental-test-coverage --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {

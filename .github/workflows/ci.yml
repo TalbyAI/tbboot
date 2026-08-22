@@ -79,6 +79,38 @@ jobs:
         run: npm run build
 
       - name: Run tests
+        if: matrix.node-version != '24.12.x' || matrix.pwsh-version != '7.6.0'
         env:
           TBBOOT_PWSH_MATRIX: ${{ matrix.pwsh-version }}
         run: npm test
+
+      - name: Run tests with coverage
+        if: matrix.node-version == '24.12.x' && matrix.pwsh-version == '7.6.0'
+        shell: pwsh
+        env:
+          TBBOOT_PWSH_MATRIX: ${{ matrix.pwsh-version }}
+        run: |
+          New-Item -ItemType Directory -Path coverage -Force | Out-Null
+          & npm run test:coverage 2>&1 | Tee-Object -FilePath coverage/summary.txt
+          $testExitCode = $LASTEXITCODE
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+      - name: Add coverage to job summary
+        if: always() && matrix.node-version == '24.12.x' && matrix.pwsh-version == '7.6.0'
+        shell: pwsh
+        run: |
+          if (Test-Path coverage/summary.txt) {
+            Get-Content coverage/summary.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          } else {
+            "Coverage report was not produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          }
+
+      - name: Upload coverage report
+        if: always() && matrix.node-version == '24.12.x' && matrix.pwsh-version == '7.6.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tbboot-coverage
+          path: coverage/summary.txt
+          if-no-files-found: warn
