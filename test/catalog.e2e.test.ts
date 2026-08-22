@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	realpath,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import test from "node:test";
@@ -17,7 +24,7 @@ async function createFixture(): Promise<{
 	catalogPath: string;
 	cleanup: () => Promise<void>;
 }> {
-	const root = await mkdtemp(join(tmpdir(), "tbboot-catalog-"));
+	const root = await realpath(await mkdtemp(join(tmpdir(), "tbboot-catalog-")));
 	const profileRoot = join(root, "profile");
 	await mkdir(profileRoot);
 	const catalogPath = join(root, "team.yaml");
