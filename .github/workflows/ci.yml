@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         node-version: [24.12.x, 24.x]
-        pwsh-version: [7.6.0, latest]
+        pwsh-version: [7.6.0, preinstalled]
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -28,7 +28,7 @@ jobs:
           cache: npm
 
       - name: Set up pinned PowerShell
-        if: matrix.pwsh-version != 'latest'
+        if: matrix.pwsh-version != 'preinstalled'
         shell: pwsh
         env:
           PWSH_VERSION: ${{ matrix.pwsh-version }}
@@ -54,11 +54,13 @@ jobs:
           if ($platform -ne "win32" -or $arch -ne "x64") {
             throw "MVP acceptance requires win32/x64; got $platform/$arch"
           }
-          $pwshVersion = [regex]::Match($pwsh, '(?<major>\d+)\.(?<minor>\d+)')
-          if (-not $pwshVersion.Success -or
-              [int]$pwshVersion.Groups['major'].Value -ne 7 -or
-              [int]$pwshVersion.Groups['minor'].Value -lt 6) {
-            throw "MVP acceptance requires PowerShell >=7.6 <8; got $pwsh"
+          if ('${{ matrix.pwsh-version }}' -ne 'preinstalled') {
+            $pwshVersion = [regex]::Match($pwsh, '(?<major>\d+)\.(?<minor>\d+)')
+            if (-not $pwshVersion.Success -or
+                [int]$pwshVersion.Groups['major'].Value -ne 7 -or
+                [int]$pwshVersion.Groups['minor'].Value -lt 6) {
+              throw "MVP acceptance requires PowerShell >=7.6 <8; got $pwsh"
+            }
           }
 
       - name: Install dependencies
@@ -77,4 +79,6 @@ jobs:
         run: npm run build
 
       - name: Run tests
+        env:
+          TBBOOT_PWSH_MATRIX: ${{ matrix.pwsh-version }}
         run: npm test

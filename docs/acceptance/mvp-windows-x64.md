@@ -8,9 +8,9 @@ does not add requirements.
 
 | Dimension | Contract | Evidence |
 | --- | --- | --- |
-| Platform | Windows x64 only | `.github/workflows/ci.yml`: the acceptance job runs on `windows-latest` and fails unless Node reports `win32`/`x64`; the detailed suite also uses Windows-specific Git, process-tree, and path assertions. |
-| Node | `>=24.12 <25` | `.github/workflows/ci.yml`: runs the acceptance job on Node `24.12.x` and latest `24.x`; `test/mvp-acceptance.e2e.test.ts`: incompatible selector rejection. |
-| PowerShell | `pwsh >=7.6 <8` | `.github/workflows/ci.yml`: runs pinned PowerShell `7.6.0` and the runner's latest compatible `pwsh`; `test/mvp-acceptance.e2e.test.ts`: installed runtime boundary and incompatible selector; `test/custom.test.ts`: inline and external PowerShell handlers. |
+| Platform | Windows x64 only | `.github/workflows/ci.yml`: the `quality` job runs on `windows-latest` and fails unless Node reports `win32`/`x64`; the detailed suite also uses Windows-specific Git, process-tree, and path assertions. |
+| Node | `>=24.12 <25` | `.github/workflows/ci.yml`: runs the `quality` job on Node `24.12.x` and latest `24.x`; `test/mvp-acceptance.e2e.test.ts`: incompatible selector rejection. |
+| PowerShell | `pwsh >=7.6 <8` | `.github/workflows/ci.yml`: the `quality` job runs a pinned PowerShell `7.6.0` leg that enforces the contract and a `preinstalled` runner leg for additional coverage; `test/mvp-acceptance.e2e.test.ts`: installed runtime boundary and incompatible selector; `test/custom.test.ts`: inline and external PowerShell handlers. |
 | Windows PowerShell | Not an MVP runtime | `test/mvp-acceptance.e2e.test.ts`: `windows-powershell` is rejected during schema validation. |
 
 ## Scenario matrix
@@ -27,7 +27,7 @@ does not add requirements.
 | Custom Node and PowerShell protocol | `test/mvp-acceptance.e2e.test.ts`: `MVP CLI runs external Node and PowerShell Custom handlers`; `test/custom.test.ts`: invalid output, stderr/stdout separation, and descendant termination. |
 | Custom authorization and revision-scoped trust | `test/custom.test.ts`: adapter coverage for temporary and revision-scoped trust; `test/doctor.e2e.test.ts`: CLI-level required and optional unauthorized Custom preflight. |
 | Optional and required Steps | `test/doctor.e2e.test.ts`: `missing input is a conflict and optional missing input is a warning`; `optional Custom preparation failures remain warnings`. |
-| Timeout, cancellation, and process-tree cleanup | `test/mvp-acceptance.e2e.test.ts`: required/optional timeout diagnostics and CLI process-boundary cancellation with later-Step suppression; `test/custom.test.ts`: adapter-level descendant termination. |
+| Timeout, cancellation, and process-tree cleanup | `test/mvp-acceptance.e2e.test.ts`: required/optional timeout diagnostics and CLI cancellation with later-Step suppression; `test/custom.test.ts`: adapter-level descendant termination. |
 | Read-only doctor and dry-run | `test/mvp-acceptance.e2e.test.ts`: `MVP CLI lifecycle preserves read-only boundaries and ownership`; `test/doctor.e2e.test.ts`: `install dry-run reports the complete plan and is read-only`. |
 | Install, idempotence, drift, and force | `test/mvp-acceptance.e2e.test.ts`: lifecycle smoke matrix; `test/doctor.e2e.test.ts`: `install blocks drift and force reconciles only the File`; `install creates distinct Managed blocks and force preserves unrelated content`. |
 | Uninstall order, ownership, unsupported Custom uninstall, and reconciliation | `test/mvp-acceptance.e2e.test.ts`: lifecycle smoke matrix; `test/doctor.e2e.test.ts`: `uninstall blocks drift, force removes owned drift, and never bypasses structure conflicts`; `uninstall preserves Custom effects without an uninstall handler`; `uninstall reconciles historical File effects without the current Source`. |
@@ -49,3 +49,7 @@ individual Git, Custom, File, and uninstall edge conditions. The Issue 21
 tests add the process-boundary smoke path that combines those contracts and
 checks the read-only, output, idempotence, drift, force, and ownership
 guarantees together.
+
+The cancellation case uses `process.emit("SIGINT")` in its preload, so it
+verifies in-process abort wiring; it does not exercise a real OS-level Ctrl-C
+or Windows console control event.

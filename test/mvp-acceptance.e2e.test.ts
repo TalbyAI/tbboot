@@ -235,7 +235,12 @@ async function runCliUntilFile(
 			"Custom process did not reach the cancellation readiness point",
 		);
 		if (preloadPath === undefined) child.kill("SIGINT");
-		return await closed;
+		const exitTimer = setTimeout(() => child.kill(), 15_000);
+		try {
+			return await closed;
+		} finally {
+			clearTimeout(exitTimer);
+		}
 	} catch (error) {
 		if (child.exitCode === null) child.kill();
 		await closed.catch(() => undefined);
@@ -246,6 +251,10 @@ async function runCliUntilFile(
 test("MVP runtime matrix accepts the supported Windows x64 boundary", async (t) => {
 	if (process.platform !== "win32" || process.arch !== "x64") {
 		t.skip("Issue 21 acceptance runs on Windows x64");
+		return;
+	}
+	if (process.env.TBBOOT_PWSH_MATRIX === "preinstalled") {
+		t.skip("The preinstalled PowerShell leg does not enforce the MVP boundary");
 		return;
 	}
 	const nodeVersion = process.versions.node.split(".").map(Number);

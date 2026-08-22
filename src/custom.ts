@@ -268,7 +268,9 @@ async function detectRuntimeUncached(
 				cause: error,
 			});
 		} finally {
-			await rm(temporaryProfile, { recursive: true, force: true });
+			await rm(temporaryProfile, { recursive: true, force: true }).catch(
+				() => undefined,
+			);
 		}
 	}
 	return classifyRuntime(name, true, parseVersion(versionText), file, selector);
