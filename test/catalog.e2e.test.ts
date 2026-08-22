@@ -69,6 +69,7 @@ test("rejects invalid Catalog command arguments with usage on stderr", async () 
 			["catalog", "add"],
 			["catalog", "info"],
 			["catalog", "search"],
+			["catalog", "search", "   "],
 			["catalog", "remove"],
 			["catalog", "list", "--unknown"],
 			["catalog", "search", "term", "one", "two"],
@@ -78,6 +79,27 @@ test("rejects invalid Catalog command arguments with usage on stderr", async () 
 			assert.equal(result.exitCode, 2, args.join(" "));
 			assert.equal(result.stdout, "", args.join(" "));
 			assert.match(result.stderr, /usage: tbboot catalog/, args.join(" "));
+		}
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("reports missing Catalog paths explicitly", async () => {
+	const fixture = await createFixture();
+	try {
+		for (const args of [
+			["catalog", "add", "missing.yaml", "--json"],
+			["catalog", "info", "missing.yaml", "--json"],
+		]) {
+			const result = await runCli(fixture, args);
+			assert.equal(result.exitCode, 1, args.join(" "));
+			assert.equal(
+				parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(result.stdout)
+					.diagnostics[0]?.code,
+				"catalog-not-found",
+				args.join(" "),
+			);
 		}
 	} finally {
 		await fixture.cleanup();
@@ -228,6 +250,41 @@ test("rejects invalid Catalogs, duplicate names, and duplicate paths", async () 
 			parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(
 				duplicatePath.stdout,
 			).diagnostics[0]?.code,
+			"catalog-path-duplicate",
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("rejects a path alias already present in the registry", async () => {
+	const fixture = await createFixture();
+	try {
+		const separator = process.platform === "win32" ? "\\\\" : "/";
+		const alias = `${fixture.root}${separator}alias${separator}..${separator}team.yaml`;
+		await mkdir(join(fixture.profileRoot, ".tbboot"));
+		await writeFile(
+			join(fixture.profileRoot, ".tbboot", "catalogs.yaml"),
+			[
+				"schemaVersion: 1",
+				"catalogs:",
+				"  - name: existing",
+				`    path: '${alias}'`,
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		const result = await runCli(fixture, [
+			"catalog",
+			"add",
+			"team.yaml",
+			"other",
+			"--json",
+		]);
+		assert.equal(result.exitCode, 1);
+		assert.equal(
+			parseJsonOutput<{ diagnostics: Array<{ code: string }> }>(result.stdout)
+				.diagnostics[0]?.code,
 			"catalog-path-duplicate",
 		);
 	} finally {

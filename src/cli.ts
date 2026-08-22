@@ -89,7 +89,8 @@ function parseCatalogCommand(args: string[]): ParseResult {
 					: [1, 2];
 		if (
 			!expected.includes(positionals.length) ||
-			positionals.some((value) => value.length === 0)
+			positionals.some((value) => value.length === 0) ||
+			(subcommand === "search" && positionals[0]?.trim().length === 0)
 		) {
 			return {
 				ok: false,

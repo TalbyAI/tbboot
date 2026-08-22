@@ -156,7 +156,9 @@ function validated<T extends "catalog" | "catalog-registry">(
 	>;
 }
 
-function validateRegistryIntegrity(document: CatalogRegistryDocument): void {
+async function validateRegistryIntegrity(
+	document: CatalogRegistryDocument,
+): Promise<void> {
 	const names = new Set<string>();
 	const paths = new Set<string>();
 	for (const entry of document.catalogs) {
@@ -175,7 +177,7 @@ function validateRegistryIntegrity(document: CatalogRegistryDocument): void {
 				{ document: ".tbboot/catalogs.yaml" },
 			);
 		}
-		const path = pathKey(entry.path);
+		const path = pathKey(await canonicalPath(entry.path));
 		if (paths.has(path)) {
 			throw new CatalogFailure(
 				"catalog-path-duplicate",
@@ -204,7 +206,7 @@ async function readRegistry(root: string): Promise<CatalogRegistryDocument> {
 		text,
 		".tbboot/catalogs.yaml",
 	) as CatalogRegistryDocument;
-	validateRegistryIntegrity(document);
+	await validateRegistryIntegrity(document);
 	return document;
 }
 
@@ -324,6 +326,20 @@ function baseEnvelope(name: CatalogCommand["name"]): CatalogEnvelope {
 	};
 }
 
+function compareText(left: string, right: string): number {
+	const leftKey = left.toLowerCase();
+	const rightKey = right.toLowerCase();
+	return leftKey < rightKey
+		? -1
+		: leftKey > rightKey
+			? 1
+			: left < right
+				? -1
+				: left > right
+					? 1
+					: 0;
+}
+
 async function runAdd(
 	command: Extract<CatalogCommand, { name: "add" }>,
 	options: CatalogRunOptions,
@@ -337,7 +353,18 @@ async function runAdd(
 			"Unable to determine the user profile",
 		);
 	const registry = await readRegistry(root);
-	const path = await realpath(resolve(cwd, command.path));
+	let path: string;
+	try {
+		path = await realpath(resolve(cwd, command.path));
+	} catch (error) {
+		if (isNotFound(error)) {
+			throw new CatalogFailure(
+				"catalog-not-found",
+				`Catalog not found: ${command.path}`,
+			);
+		}
+		throw error;
+	}
 	const loaded = await readCatalog(path);
 	const name = command.catalogName ?? defaultName(path);
 	const nameKey = name.toLowerCase();
@@ -348,7 +375,11 @@ async function runAdd(
 		);
 	}
 	if (
-		registry.catalogs.some((entry) => pathKey(entry.path) === pathKey(path))
+		(
+			await Promise.all(
+				registry.catalogs.map((entry) => canonicalPath(entry.path)),
+			)
+		).some((entryPath) => pathKey(entryPath) === pathKey(path))
 	) {
 		throw new CatalogFailure(
 			"catalog-path-duplicate",
@@ -409,8 +440,22 @@ async function runInfo(
 		);
 	const registry = await readRegistry(root);
 	const registered = await resolveRegistered(registry, command.selector, cwd);
-	const path =
-		registered?.entry.path ?? (await realpath(resolve(cwd, command.selector)));
+	let path: string;
+	if (registered !== undefined) {
+		path = registered.entry.path;
+	} else {
+		try {
+			path = await realpath(resolve(cwd, command.selector));
+		} catch (error) {
+			if (isNotFound(error)) {
+				throw new CatalogFailure(
+					"catalog-not-found",
+					`Catalog not found: ${command.selector}`,
+				);
+			}
+			throw error;
+		}
+	}
 	const loaded = await readCatalog(path);
 	envelope.catalog = {
 		...(registered === undefined ? {} : { name: registered.entry.name }),
@@ -473,9 +518,9 @@ async function runSearch(
 	if (envelope.diagnostics.length > 0) return;
 	results.sort(
 		(left, right) =>
-			left.catalog.localeCompare(right.catalog) ||
-			left.title.localeCompare(right.title) ||
-			left.identity.localeCompare(right.identity),
+			compareText(left.catalog, right.catalog) ||
+			compareText(left.title, right.title) ||
+			compareText(left.identity, right.identity),
 	);
 	envelope.results = results;
 }
