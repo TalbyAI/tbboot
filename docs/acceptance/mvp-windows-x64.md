@@ -40,9 +40,14 @@ The acceptance commands are:
 ```powershell
 npm run typecheck
 npm test
+npm run test:coverage
 npm run check
 npm run build
 ```
+
+La combinación canónica del CI muestra la tabla nativa de Node en el log,
+escribe `coverage/summary.txt` en el resumen del job y la publica como el
+artefacto descargable `tbboot-coverage`.
 
 The matrix intentionally reuses the existing detailed end-to-end cases for
 individual Git, Custom, File, and uninstall edge conditions. The Issue 21
@@ -50,6 +55,8 @@ tests add the process-boundary smoke path that combines those contracts and
 checks the read-only, output, idempotence, drift, force, and ownership
 guarantees together.
 
-The cancellation case uses `process.emit("SIGINT")` in its preload, so it
-verifies in-process abort wiring; it does not exercise a real OS-level Ctrl-C
-or Windows console control event.
+The deterministic cancellation case uses `process.emit("SIGINT")` in its
+preload, so it verifies in-process abort wiring. The separate `MVP CLI cancels
+Custom install with a Windows console control event` test creates a Windows
+console and process group through the test launcher, sends a real
+`GenerateConsoleCtrlEvent`, and verifies exit 130 and later-Step suppression.

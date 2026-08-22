@@ -248,6 +248,224 @@ async function runCliUntilFile(
 	}
 }
 
+async function sendWindowsCtrlC(processId: number): Promise<void> {
+	assert.equal(process.platform, "win32");
+	const result = await runCommand({
+		file: "pwsh",
+		args: [
+			"-NoProfile",
+			"-Command",
+			[
+				"$ErrorActionPreference = 'Stop'",
+				"$source = @'",
+				"using System;",
+				"using System.Runtime.InteropServices;",
+				"public static class TbbootConsoleControl {",
+				'  [DllImport("kernel32.dll", SetLastError = true)]',
+				"  public static extern bool AttachConsole(uint processId);",
+				'  [DllImport("kernel32.dll", SetLastError = true)]',
+				"  public static extern bool FreeConsole();",
+				'  [DllImport("kernel32.dll", SetLastError = true)]',
+				"  public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);",
+				"}",
+				"'@",
+				"Add-Type -TypeDefinition $source",
+				"[TbbootConsoleControl]::FreeConsole() | Out-Null",
+				`$attached = [TbbootConsoleControl]::AttachConsole([uint32]${processId})`,
+				"$generated = $false",
+				`if ($attached) { $generated = [TbbootConsoleControl]::GenerateConsoleCtrlEvent(0, [uint32]${processId}) }`,
+				"$generateError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+				"[TbbootConsoleControl]::FreeConsole() | Out-Null",
+				'if (-not $attached -or -not $generated) { throw "Unable to send console control event: attached=$attached generated=$generated error=$generateError" }',
+				'Write-Output "attached=$attached generated=$generated error=$generateError"',
+			].join("\n"),
+		],
+	});
+	assert.equal(result.exitCode, 0, result.stderr);
+	assert.match(result.stdout, /attached=True generated=True/);
+}
+
+async function runCliInWindowsConsoleUntilFile(
+	fixture: Fixture,
+	args: string[],
+	readyPath: string,
+): Promise<CommandResult> {
+	const launcherPath = join(fixture.root, "windows-console-launcher.ps1");
+	const pidPath = join(fixture.root, "windows-console-child.pid");
+	const config = JSON.stringify({
+		file: process.execPath,
+		args: [cliPath, ...args],
+		cwd: fixture.consumerRoot,
+		pid: pidPath,
+	});
+	const launcherSource = [
+		"using System;",
+		"using System.ComponentModel;",
+		"using System.Runtime.InteropServices;",
+		"using System.Text;",
+		"public static class TbbootProcessControl {",
+		"  const uint CREATE_NEW_CONSOLE = 0x00000010;",
+		"  const uint CREATE_NEW_PROCESS_GROUP = 0x00000200;",
+		"  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]",
+		"  struct STARTUPINFO {",
+		"    public int cb;",
+		"    public string lpReserved;",
+		"    public string lpDesktop;",
+		"    public string lpTitle;",
+		"    public int dwX;",
+		"    public int dwY;",
+		"    public int dwXSize;",
+		"    public int dwYSize;",
+		"    public int dwXCountChars;",
+		"    public int dwYCountChars;",
+		"    public int dwFillAttribute;",
+		"    public int dwFlags;",
+		"    public short wShowWindow;",
+		"    public short cbReserved2;",
+		"    public IntPtr lpReserved2;",
+		"    public IntPtr hStdInput;",
+		"    public IntPtr hStdOutput;",
+		"    public IntPtr hStdError;",
+		"  }",
+		"  [StructLayout(LayoutKind.Sequential)]",
+		"  struct PROCESS_INFORMATION {",
+		"    public IntPtr hProcess;",
+		"    public IntPtr hThread;",
+		"    public uint processId;",
+		"    public uint threadId;",
+		"  }",
+		'  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+		"  static extern bool CreateProcess(string applicationName, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);",
+		'  [DllImport("kernel32.dll", SetLastError = true)]',
+		"  static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);",
+		'  [DllImport("kernel32.dll", SetLastError = true)]',
+		"  static extern bool GetExitCodeProcess(IntPtr handle, out uint exitCode);",
+		'  [DllImport("kernel32.dll", SetLastError = true)]',
+		"  static extern bool CloseHandle(IntPtr handle);",
+		"  public static IntPtr Launch(string applicationName, string commandLine, string currentDirectory, out uint processId) {",
+		"    var startupInfo = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>() };",
+		"    var command = new StringBuilder(commandLine);",
+		"    if (!CreateProcess(applicationName, command, IntPtr.Zero, IntPtr.Zero, false, CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP, IntPtr.Zero, currentDirectory, ref startupInfo, out var processInformation))",
+		"      throw new Win32Exception(Marshal.GetLastWin32Error());",
+		"    processId = processInformation.processId;",
+		"    CloseHandle(processInformation.hThread);",
+		"    return processInformation.hProcess;",
+		"  }",
+		"  public static uint Wait(IntPtr handle) {",
+		"    WaitForSingleObject(handle, 0xffffffff);",
+		"    if (!GetExitCodeProcess(handle, out var exitCode)) throw new Win32Exception(Marshal.GetLastWin32Error());",
+		"    CloseHandle(handle);",
+		"    return exitCode;",
+		"  }",
+		"}",
+	].join("\n");
+	await writeFile(
+		launcherPath,
+		[
+			"$ErrorActionPreference = 'Stop'",
+			"$source = @'",
+			launcherSource,
+			"'@",
+			"Add-Type -TypeDefinition $source",
+			"$config = @'",
+			config,
+			"'@ | ConvertFrom-Json",
+			"$parts = @('node.exe') + [string[]]$config.args",
+			"$command = ($parts | ForEach-Object { '\"' + $_ + '\"' }) -join ' '",
+			"$handle = [IntPtr]::Zero",
+			"[uint32]$processId = 0",
+			"$handle = [TbbootProcessControl]::Launch($config.file, $command, $config.cwd, [ref]$processId)",
+			"$processId | Set-Content -Path $config.pid",
+			"$exitCode = [TbbootProcessControl]::Wait($handle)",
+			"exit $exitCode",
+			"",
+		].join("\n"),
+		"utf8",
+	);
+	const launcher = spawn("pwsh", ["-NoProfile", "-File", launcherPath], {
+		cwd: fixture.consumerRoot,
+		env: {
+			...process.env,
+			USERPROFILE: fixture.profileRoot,
+			HOME: fixture.profileRoot,
+		},
+		windowsHide: true,
+	});
+	let launcherStdout = "";
+	let launcherStderr = "";
+	launcher.stdout.setEncoding("utf8");
+	launcher.stderr.setEncoding("utf8");
+	launcher.stdout.on("data", (chunk: string) => {
+		launcherStdout += chunk;
+	});
+	launcher.stderr.on("data", (chunk: string) => {
+		launcherStderr += chunk;
+	});
+	const closed = new Promise<CommandResult>((resolve, reject) => {
+		launcher.once("error", reject);
+		launcher.once("close", (exitCode) =>
+			resolve({ exitCode, stdout: launcherStdout, stderr: launcherStderr }),
+		);
+	});
+	let processId: number | undefined;
+	const deadline = Date.now() + 10_000;
+	try {
+		while (Date.now() < deadline) {
+			if (
+				await readFile(readyPath).then(
+					() => true,
+					() => false,
+				)
+			)
+				break;
+			if (launcher.exitCode !== null) {
+				throw new Error(
+					`CLI launcher exited before readiness: ${launcher.exitCode}\n${launcherStdout}\n${launcherStderr}`,
+				);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		assert.ok(
+			await readFile(readyPath).then(
+				() => true,
+				() => false,
+			),
+			"Custom process did not reach the Windows cancellation readiness point",
+		);
+		processId = Number((await readFile(pidPath, "utf8")).trim());
+		assert.ok(Number.isInteger(processId) && processId > 0);
+		await sendWindowsCtrlC(processId);
+		const exitTimer = setTimeout(() => {
+			if (processId !== undefined) {
+				void runCommand({
+					file: "taskkill.exe",
+					args: ["/PID", String(processId), "/T", "/F"],
+				}).catch(() => undefined);
+			}
+		}, 15_000);
+		try {
+			const result = await closed;
+			return {
+				exitCode: result.exitCode,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			};
+		} finally {
+			clearTimeout(exitTimer);
+		}
+	} catch (error) {
+		if (processId !== undefined) {
+			await runCommand({
+				file: "taskkill.exe",
+				args: ["/PID", String(processId), "/T", "/F"],
+			}).catch(() => undefined);
+		}
+		if (launcher.exitCode === null) launcher.kill();
+		await closed.catch(() => undefined);
+		throw error;
+	}
+}
+
 test("MVP runtime matrix accepts the supported Windows x64 boundary", async (t) => {
 	if (process.platform !== "win32" || process.arch !== "x64") {
 		t.skip("Issue 21 acceptance runs on Windows x64");
@@ -869,6 +1087,76 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
 		assert.equal((finalState.match(/step: 1/g) ?? []).length, 1);
 		assert.equal((finalState.match(/step: 2/g) ?? []).length, 1);
 		assert.equal((finalState.match(/step: 3/g) ?? []).length, 1);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("MVP CLI cancels Custom install with a Windows console control event", async (t) => {
+	if (process.platform !== "win32" || process.arch !== "x64") {
+		t.skip("Issue 21 acceptance runs on Windows x64");
+		return;
+	}
+	const fixture = await createFixture();
+	const readyPath = join(fixture.consumerRoot, "real-cancel-ready");
+	const allowCustom = ["--allow-custom", fixture.sourceRoot];
+	try {
+		await writeFile(
+			join(fixture.sourceRoot, "baseline", "recipe.yaml"),
+			[
+				"schemaVersion: 1",
+				"steps:",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: generated/real-cancel.txt",
+				"  - type: custom",
+				"    check:",
+				"      runtime: node",
+				"      content: 'return { status: \"ok\", changed: false };'",
+				"    install:",
+				"      runtime: node",
+				"      content: |",
+				'        const { writeFile } = await import("node:fs/promises");',
+				'        await writeFile("real-cancel-ready", "ready\\n");',
+				"        await new Promise(() => setInterval(() => {}, 1000));",
+				"  - type: file",
+				"    input: files/hello.txt",
+				"    target: after-real-cancel.txt",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		const cancelled = await runCliInWindowsConsoleUntilFile(
+			fixture,
+			["install", "--root", fixture.consumerRoot, ...allowCustom, "--json"],
+			readyPath,
+		);
+		assert.equal(
+			cancelled.exitCode,
+			130,
+			`${cancelled.stdout}\n${cancelled.stderr}`,
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "generated", "real-cancel.txt"),
+				"utf8",
+			),
+			"hello\n",
+		);
+		assert.match(
+			await readFile(
+				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+				"utf8",
+			),
+			/step: 1/,
+		);
+		assert.equal(
+			await readFile(
+				join(fixture.consumerRoot, "after-real-cancel.txt"),
+				"utf8",
+			).catch(() => undefined),
+			undefined,
+		);
 	} finally {
 		await fixture.cleanup();
 	}
