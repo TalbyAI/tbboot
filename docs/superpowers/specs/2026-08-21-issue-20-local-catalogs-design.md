@@ -128,6 +128,8 @@ Los diagnósticos mínimos y estables serán:
   Catalog.
 - `catalog-not-found` cuando un nombre o path solicitado no existe.
 - `catalog-read-failed` cuando el archivo registrado no puede leerse.
+- `catalog-profile-unavailable` cuando no puede determinarse el perfil de
+  usuario que contiene el registro.
 
 Los errores de uso de argumentos siguen devolviendo `2`. Las operaciones
 válidas que encuentran un Catalog inválido devuelven un envelope de error. Los

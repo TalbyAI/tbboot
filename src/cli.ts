@@ -309,8 +309,11 @@ function renderCatalogHuman(envelope: CatalogEnvelope): string {
 		);
 	}
 	for (const diagnostic of envelope.diagnostics) {
+		const context = [diagnostic.document, diagnostic.path]
+			.filter((value) => value !== undefined)
+			.join(" ");
 		lines.push(
-			`${diagnostic.severity}: ${diagnostic.code}${diagnostic.path === undefined ? "" : ` [${diagnostic.path}]`}: ${diagnostic.message}`,
+			`${diagnostic.severity}: ${diagnostic.code}${context ? ` [${context}]` : ""}: ${diagnostic.message}`,
 		);
 	}
 	return `${lines.join("\n")}\n`;

@@ -13,6 +13,7 @@ import {
 	type CatalogEntry,
 	type CatalogRegistryDocument,
 	type Diagnostic,
+	type DocumentByKind,
 	type SourceReference,
 	validateDocument,
 } from "./contract.ts";
@@ -139,7 +140,7 @@ function validated<T extends "catalog" | "catalog-registry">(
 	kind: T,
 	text: string,
 	document: string,
-): Extract<CatalogDocument | CatalogRegistryDocument, { schemaVersion: 1 }> {
+): DocumentByKind[T] {
 	const result = validateDocument({ kind, text, document });
 	if (result.value === undefined) {
 		throw new CatalogFailure(
@@ -150,10 +151,7 @@ function validated<T extends "catalog" | "catalog-registry">(
 			{ document },
 		);
 	}
-	return result.value as Extract<
-		CatalogDocument | CatalogRegistryDocument,
-		{ schemaVersion: 1 }
-	>;
+	return result.value;
 }
 
 async function validateRegistryIntegrity(
@@ -201,11 +199,7 @@ async function readRegistry(root: string): Promise<CatalogRegistryDocument> {
 			document: ".tbboot/catalogs.yaml",
 		});
 	}
-	const document = validated(
-		"catalog-registry",
-		text,
-		".tbboot/catalogs.yaml",
-	) as CatalogRegistryDocument;
+	const document = validated("catalog-registry", text, ".tbboot/catalogs.yaml");
 	await validateRegistryIntegrity(document);
 	return document;
 }
@@ -249,7 +243,7 @@ async function readCatalog(path: string): Promise<LoadedCatalog> {
 			document: path,
 		});
 	}
-	const document = validated("catalog", text, path) as CatalogDocument;
+	const document = validated("catalog", text, path);
 	const identities: string[] = [];
 	const seen = new Set<string>();
 	for (const entry of document.entries) {
@@ -297,21 +291,20 @@ async function resolveRegistered(
 	if (byName !== -1)
 		return {
 			index: byName,
-			entry: document.catalogs[
-				byName
-			] as CatalogRegistryDocument["catalogs"][number],
+			entry: document.catalogs[byName],
 		};
 	const candidate = pathKey(await canonicalPath(resolve(cwd, selector)));
-	const byPath = document.catalogs.findIndex(
-		(entry) => pathKey(entry.path) === candidate,
+	const canonical = await Promise.all(
+		document.catalogs.map(async (entry) =>
+			pathKey(await canonicalPath(entry.path)),
+		),
 	);
+	const byPath = canonical.indexOf(candidate);
 	return byPath === -1
 		? undefined
 		: {
 				index: byPath,
-				entry: document.catalogs[
-					byPath
-				] as CatalogRegistryDocument["catalogs"][number],
+				entry: document.catalogs[byPath],
 			};
 }
 
@@ -489,7 +482,14 @@ async function runSearch(
 			`Catalog not found: ${command.catalogName}`,
 		);
 	}
-	const terms = command.term.trim().toLowerCase().split(/\s+/);
+	const normalizedTerm = command.term.trim().toLowerCase();
+	if (normalizedTerm.length === 0) {
+		throw new CatalogFailure(
+			"catalog-not-found",
+			"Search term must not be empty",
+		);
+	}
+	const terms = normalizedTerm.split(/\s+/);
 	const results: CatalogSearchResult[] = [];
 	for (const entry of selected) {
 		try {
@@ -515,7 +515,10 @@ async function runSearch(
 			envelope.diagnostics.push(failureDiagnostic(error));
 		}
 	}
-	if (envelope.diagnostics.length > 0) return;
+	if (envelope.diagnostics.length > 0) {
+		envelope.results = [];
+		return;
+	}
 	results.sort(
 		(left, right) =>
 			compareText(left.catalog, right.catalog) ||

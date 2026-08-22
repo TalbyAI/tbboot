@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { runCatalog } from "../src/catalog.ts";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -15,9 +17,7 @@ async function createFixture(): Promise<{
 	catalogPath: string;
 	cleanup: () => Promise<void>;
 }> {
-	const root = await mkdtemp(
-		join(process.env.TEMP ?? process.env.TMP ?? ".", "tbboot-catalog-"),
-	);
+	const root = await mkdtemp(join(tmpdir(), "tbboot-catalog-"));
 	const profileRoot = join(root, "profile");
 	await mkdir(profileRoot);
 	const catalogPath = join(root, "team.yaml");
@@ -260,8 +260,7 @@ test("rejects invalid Catalogs, duplicate names, and duplicate paths", async () 
 test("rejects a path alias already present in the registry", async () => {
 	const fixture = await createFixture();
 	try {
-		const separator = process.platform === "win32" ? "\\\\" : "/";
-		const alias = `${fixture.root}${separator}alias${separator}..${separator}team.yaml`;
+		const alias = `${fixture.root}${sep}alias${sep}..${sep}team.yaml`;
 		await mkdir(join(fixture.profileRoot, ".tbboot"));
 		await writeFile(
 			join(fixture.profileRoot, ".tbboot", "catalogs.yaml"),
@@ -273,6 +272,17 @@ test("rejects a path alias already present in the registry", async () => {
 				"",
 			].join("\n"),
 			"utf8",
+		);
+		const info = await runCli(fixture, [
+			"catalog",
+			"info",
+			fixture.catalogPath,
+			"--json",
+		]);
+		assert.equal(info.exitCode, 0);
+		assert.equal(
+			parseJsonOutput<{ catalog: { name?: string } }>(info.stdout).catalog.name,
+			"existing",
 		);
 		const result = await runCli(fixture, [
 			"catalog",
@@ -491,7 +501,48 @@ test("normalizes relative local Source paths and reports external Catalog change
 				.diagnostics[0]?.code,
 			"catalog-validation-failed",
 		);
+		const searched = await runCli(fixture, [
+			"catalog",
+			"search",
+			"anything",
+			"--json",
+		]);
+		assert.equal(searched.exitCode, 1);
+		assert.deepEqual(
+			parseJsonOutput<{ results: unknown[] }>(searched.stdout).results,
+			[],
+		);
+		const human = await runCli(fixture, ["catalog", "list"]);
+		assert.equal(human.exitCode, 1);
+		assert.ok(
+			human.stdout
+				.split("\n")
+				.some(
+					(line) =>
+						line.startsWith("error: catalog-validation-failed [") &&
+						line.includes(fixture.catalogPath),
+				),
+		);
 		assert.deepEqual(await readFile(registryPath), registryBefore);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("rejects whitespace-only searches in the Catalog module", async () => {
+	const fixture = await createFixture();
+	try {
+		assert.equal(
+			(await runCli(fixture, ["catalog", "add", "team.yaml", "--json"]))
+				.exitCode,
+			0,
+		);
+		const result = await runCatalog(
+			{ name: "search", term: " \t " },
+			{ profileRoot: fixture.profileRoot },
+		);
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.envelope.diagnostics[0]?.code, "catalog-not-found");
 	} finally {
 		await fixture.cleanup();
 	}
