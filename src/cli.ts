@@ -408,7 +408,15 @@ if (
 	entrypoint &&
 	realpathSync(entrypoint) === realpathSync(fileURLToPath(import.meta.url))
 ) {
-	main().then((code) => {
-		process.exitCode = code;
-	});
+	main().then(
+		(code) => {
+			process.exitCode = code;
+		},
+		(error) => {
+			process.stderr.write(
+				`${error instanceof Error ? error.message : String(error)}\n`,
+			);
+			process.exitCode = 1;
+		},
+	);
 }

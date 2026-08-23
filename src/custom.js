@@ -438,8 +438,7 @@ export async function runHandler(options) {
         return { ...outcome, result: validateResult(value) };
     }
     catch (error) {
-        if (error.code === undefined &&
-            error.code === "ENOENT") {
+        if (error.code === "ENOENT") {
             throw runnerError("spawn-failed", {
                 cause: error,
             });

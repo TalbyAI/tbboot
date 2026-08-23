@@ -590,10 +590,7 @@ export async function runHandler(options: {
 		}
 		return { ...outcome, result: validateResult(value) };
 	} catch (error) {
-		if (
-			(error as RunnerError).code === undefined &&
-			(error as NodeJS.ErrnoException).code === "ENOENT"
-		) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 			throw runnerError("spawn-failed", {
 				cause: error,
 			});
