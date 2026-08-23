@@ -36,7 +36,7 @@ La línea base actual es:
 
 | Evidencia | Resultado |
 | --- | ---: |
-| Suite de producción | 109 pasados, 1 omitido, 0 fallos |
+| Suite de producción (pre-cierre) | 109 pasados, 1 omitido, 0 fallos |
 | Prototipo #9 | 78 pasados |
 | Prototipo #10 | 11 pasados |
 | Prototipo #11 | 19 pasados |

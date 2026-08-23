@@ -203,7 +203,8 @@ test("MVP CLI runs an erasable TypeScript Custom handler", async () => {
     ]);
     assert.equal(installed.exitCode, 0, installed.stdout);
     assert.equal(jsonEnvelope(installed, "install").changed, true);
-    assert.match(installed.stderr, /external-ts-(check|install)-log/);
+    assert.match(installed.stderr, /external-ts-check-log/);
+    assert.match(installed.stderr, /external-ts-install-log/);
     assert.equal(
       await readFile(join(fixture.consumerRoot, "external-ts.txt"), "utf8"),
       "typescript\n",
@@ -275,7 +276,7 @@ git commit -m "test: cover erasable TypeScript Custom handlers"
 
 **Interfaces:**
 
-- Reuse `createFixture()`, `runCli()`, `jsonEnvelope()`, and `readFile()`.
+- Reuse `createFixture()`, `runCli()`, `jsonEnvelope()`, `readFile()`, `stat()`, and `parse()` from `yaml`.
 - The recipe uses step 0 as a File effect, step 1 as a required Custom, and step 2 as a File that must not run after the failure.
 - Produces a state file after the first run containing only the completed step 0 effect, and after the second run containing each effect exactly once.
 
@@ -334,6 +335,12 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
       ),
       "hello\n",
     );
+    const beforeFailurePath = join(
+      fixture.consumerRoot,
+      "generated",
+      "before-failure.txt",
+    );
+    const beforeFailureMtime = (await stat(beforeFailurePath)).mtimeMs;
     assert.equal(
       await readFile(
         join(fixture.consumerRoot, "generated", "after-failure.txt"),
@@ -345,9 +352,10 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
       join(fixture.consumerRoot, ".tbboot", "state.yaml"),
       "utf8",
     );
-    assert.match(partialState, /step: 0/);
-    assert.doesNotMatch(partialState, /step: 1/);
-    assert.doesNotMatch(partialState, /step: 2/);
+    assert.deepEqual(
+      parse(partialState).effects.map(({ step }) => step),
+      [0],
+    );
 
     await writeFile(
       join(fixture.sourceRoot, "baseline", "recipe.yaml"),
@@ -387,14 +395,15 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
       ),
       "hello\n",
     );
+    assert.equal((await stat(beforeFailurePath)).mtimeMs, beforeFailureMtime);
     const finalState = await readFile(
       join(fixture.consumerRoot, ".tbboot", "state.yaml"),
       "utf8",
     );
-    assert.equal((finalState.match(/step: [012]/g) ?? []).length, 3);
-    assert.equal((finalState.match(/step: 0/g) ?? []).length, 1);
-    assert.equal((finalState.match(/step: 1/g) ?? []).length, 1);
-    assert.equal((finalState.match(/step: 2/g) ?? []).length, 1);
+    assert.deepEqual(
+      parse(finalState).effects.map(({ step }) => step),
+      [0, 1, 2],
+    );
   } finally {
     await fixture.cleanup();
   }
@@ -471,7 +480,7 @@ Use the result only as an implementation decision. Do not commit the probe or a 
 
 - [ ] **Step 2: Add the real-process test only when the probe is repeatable**
 
-If the probe succeeds twice on the same Windows environment, extend `test/mvp-acceptance.e2e.test.ts` with a separate test that spawns the CLI with a detached process group, waits for `cancel-ready`, attaches the helper to that console, sends `GenerateConsoleCtrlEvent(0, processGroupId)`, and asserts:
+If the probe succeeds twice on the same Windows environment, extend `test/mvp-acceptance.e2e.test.ts` with a separate test that spawns the CLI with a detached process group, waits for `cancel-ready`, attaches the helper to that console, sends `GenerateConsoleCtrlEvent(0, 0)`, waits for the child to exit, and asserts:
 
 ```typescript
 assert.equal(cancelled.exitCode, 130);

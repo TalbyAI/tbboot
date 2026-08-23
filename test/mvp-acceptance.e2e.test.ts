@@ -7,12 +7,14 @@ import {
 	readFile,
 	realpath,
 	rm,
+	stat,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parse } from "yaml";
 import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -36,6 +38,14 @@ type Envelope = {
 	actions: unknown[];
 	diagnostics: Array<{ code: string; severity: string; message: string }>;
 };
+
+type StateSnapshot = {
+	effects: Array<{ step: number }>;
+};
+
+function stateSteps(text: string): number[] {
+	return (parse(text) as StateSnapshot).effects.map(({ step }) => step);
+}
 
 async function createFixture(): Promise<Fixture> {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "tbboot-mvp-")));
@@ -210,28 +220,12 @@ async function runCliUntilFile(
 		child.once("error", reject);
 		child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
 	});
-	const deadline = Date.now() + 10_000;
 	try {
-		while (Date.now() < deadline) {
-			if (
-				await readFile(readyPath).then(
-					() => true,
-					() => false,
-				)
-			)
-				break;
-			if (child.exitCode !== null) {
-				throw new Error(
-					`CLI exited before readiness: ${child.exitCode}\n${stdout}\n${stderr}`,
-				);
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
-		assert.ok(
-			await readFile(readyPath).then(
-				() => true,
-				() => false,
-			),
+		await waitForReady(
+			readyPath,
+			() => child.exitCode !== null,
+			() =>
+				`CLI exited before readiness: ${child.exitCode}\n${stdout}\n${stderr}`,
 			"Custom process did not reach the cancellation readiness point",
 		);
 		if (preloadPath === undefined) child.kill("SIGINT");
@@ -246,6 +240,33 @@ async function runCliUntilFile(
 		await closed.catch(() => undefined);
 		throw error;
 	}
+}
+
+async function waitForReady(
+	readyPath: string,
+	isExited: () => boolean,
+	exitMessage: () => string,
+	assertionMessage: string,
+): Promise<void> {
+	const deadline = Date.now() + 10_000;
+	while (Date.now() < deadline) {
+		if (
+			await readFile(readyPath).then(
+				() => true,
+				() => false,
+			)
+		)
+			return;
+		if (isExited()) throw new Error(exitMessage());
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	assert.ok(
+		await readFile(readyPath).then(
+			() => true,
+			() => false,
+		),
+		assertionMessage,
+	);
 }
 
 async function sendWindowsCtrlC(processId: number): Promise<void> {
@@ -266,14 +287,17 @@ async function sendWindowsCtrlC(processId: number): Promise<void> {
 				'  [DllImport("kernel32.dll", SetLastError = true)]',
 				"  public static extern bool FreeConsole();",
 				'  [DllImport("kernel32.dll", SetLastError = true)]',
+				"  public static extern bool SetConsoleCtrlHandler(IntPtr handlerRoutine, bool add);",
+				'  [DllImport("kernel32.dll", SetLastError = true)]',
 				"  public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);",
 				"}",
 				"'@",
 				"Add-Type -TypeDefinition $source",
+				"[TbbootConsoleControl]::SetConsoleCtrlHandler([IntPtr]::Zero, $true) | Out-Null",
 				"[TbbootConsoleControl]::FreeConsole() | Out-Null",
 				`$attached = [TbbootConsoleControl]::AttachConsole([uint32]${processId})`,
 				"$generated = $false",
-				`if ($attached) { $generated = [TbbootConsoleControl]::GenerateConsoleCtrlEvent(0, [uint32]${processId}) }`,
+				`if ($attached) { $generated = [TbbootConsoleControl]::GenerateConsoleCtrlEvent(0, 0) }`,
 				"$generateError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()",
 				"[TbbootConsoleControl]::FreeConsole() | Out-Null",
 				'if (-not $attached -or -not $generated) { throw "Unable to send console control event: attached=$attached generated=$generated error=$generateError" }',
@@ -408,28 +432,12 @@ async function runCliInWindowsConsoleUntilFile(
 		);
 	});
 	let processId: number | undefined;
-	const deadline = Date.now() + 10_000;
 	try {
-		while (Date.now() < deadline) {
-			if (
-				await readFile(readyPath).then(
-					() => true,
-					() => false,
-				)
-			)
-				break;
-			if (launcher.exitCode !== null) {
-				throw new Error(
-					`CLI launcher exited before readiness: ${launcher.exitCode}\n${launcherStdout}\n${launcherStderr}`,
-				);
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
-		assert.ok(
-			await readFile(readyPath).then(
-				() => true,
-				() => false,
-			),
+		await waitForReady(
+			readyPath,
+			() => launcher.exitCode !== null,
+			() =>
+				`CLI launcher exited before readiness: ${launcher.exitCode}\n${launcherStdout}\n${launcherStderr}`,
 			"Custom process did not reach the Windows cancellation readiness point",
 		);
 		processId = Number((await readFile(pidPath, "utf8")).trim());
@@ -1026,6 +1034,12 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
 			),
 			"hello\n",
 		);
+		const beforeFailurePath = join(
+			fixture.consumerRoot,
+			"generated",
+			"before-failure.txt",
+		);
+		const beforeFailureMtime = (await stat(beforeFailurePath)).mtimeMs;
 		assert.equal(
 			await readFile(
 				join(fixture.consumerRoot, "generated", "after-failure.txt"),
@@ -1037,9 +1051,7 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
 			join(fixture.consumerRoot, ".tbboot", "state.yaml"),
 			"utf8",
 		);
-		assert.match(partialState, /step: 1/);
-		assert.doesNotMatch(partialState, /step: 2/);
-		assert.doesNotMatch(partialState, /step: 3/);
+		assert.deepEqual(stateSteps(partialState), [1]);
 
 		await writeFile(
 			join(fixture.sourceRoot, "baseline", "recipe.yaml"),
@@ -1079,14 +1091,12 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
 			),
 			"hello\n",
 		);
+		assert.equal((await stat(beforeFailurePath)).mtimeMs, beforeFailureMtime);
 		const finalState = await readFile(
 			join(fixture.consumerRoot, ".tbboot", "state.yaml"),
 			"utf8",
 		);
-		assert.equal((finalState.match(/step: [123]/g) ?? []).length, 3);
-		assert.equal((finalState.match(/step: 1/g) ?? []).length, 1);
-		assert.equal((finalState.match(/step: 2/g) ?? []).length, 1);
-		assert.equal((finalState.match(/step: 3/g) ?? []).length, 1);
+		assert.deepEqual(stateSteps(finalState), [1, 2, 3]);
 	} finally {
 		await fixture.cleanup();
 	}
@@ -1094,7 +1104,7 @@ test("MVP CLI persists required failure state and reconciles it later", async ()
 
 test("MVP CLI cancels Custom install with a Windows console control event", async (t) => {
 	if (process.platform !== "win32" || process.arch !== "x64") {
-		t.skip("Issue 21 acceptance runs on Windows x64");
+		t.skip("MVP acceptance cancellation runs on Windows x64 only");
 		return;
 	}
 	const fixture = await createFixture();
@@ -1143,12 +1153,14 @@ test("MVP CLI cancels Custom install with a Windows console control event", asyn
 			),
 			"hello\n",
 		);
-		assert.match(
-			await readFile(
-				join(fixture.consumerRoot, ".tbboot", "state.yaml"),
-				"utf8",
+		assert.deepEqual(
+			stateSteps(
+				await readFile(
+					join(fixture.consumerRoot, ".tbboot", "state.yaml"),
+					"utf8",
+				),
 			),
-			/step: 1/,
+			[1],
 		);
 		assert.equal(
 			await readFile(
