@@ -50,7 +50,7 @@ escribe `coverage/summary.txt` en el resumen del job y la publica como el
 artefacto descargable `tbboot-coverage`.
 
 The matrix intentionally reuses the existing detailed end-to-end cases for
-individual Git, Custom, File, and uninstall edge conditions. The Issue 21
+individual Git, Custom, File, and uninstall edge conditions. The Issue #8
 tests add the process-boundary smoke path that combines those contracts and
 checks the read-only, output, idempotence, drift, force, and ownership
 guarantees together.
@@ -60,3 +60,5 @@ preload, so it verifies in-process abort wiring. The separate `MVP CLI cancels
 Custom install with a Windows console control event` test creates a Windows
 console and process group through the test launcher, sends a real
 `GenerateConsoleCtrlEvent`, and verifies exit 130 and later-Step suppression.
+The committed Windows path sends `GenerateConsoleCtrlEvent(0, 0)` after the
+`cancel-ready` marker and asserts the persisted partial state before cleanup.

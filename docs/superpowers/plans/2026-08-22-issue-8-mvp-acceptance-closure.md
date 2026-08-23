@@ -486,6 +486,9 @@ exposes its process id, wait method, exit code, and handle cleanup. After the
 ```powershell
 $child = [ProbeProcess]::Launch($cliCommand, $consumerRoot)
 try {
+  if (-not $child.WaitForMarker("cancel-ready", 15000)) {
+    throw "The CLI did not reach cancel-ready within 15 seconds"
+  }
   [ConsoleControl]::FreeConsole() | Out-Null
   if (-not [ConsoleControl]::AttachConsole([uint32]$child.Id)) {
     throw "Unable to attach to the child console"
@@ -523,6 +526,13 @@ If the probe succeeds twice on the same Windows environment, extend `test/mvp-ac
 ```typescript
 assert.equal(cancelled.exitCode, 130);
 assert.match(cancelled.stderr, /cancel|SIGINT/i);
+const cancellationState = parse(
+  await readFile(join(fixture.consumerRoot, ".tbboot", "state.yaml"), "utf8"),
+);
+assert.deepEqual(
+  cancellationState.effects.map(({ step }) => step),
+  [1],
+);
 assert.equal(
   await readFile(join(fixture.consumerRoot, "after-cancel.txt"), "utf8")
     .catch(() => undefined),
@@ -532,7 +542,13 @@ assert.equal(
 
 The test must clean up the child process in a `finally` block and must never fall back to an unconditional force kill while reporting success.
 
-- [ ] **Step 3: Document the actual result when the probe is unavailable**
+- [ ] **Step 3: Document the actual result**
+
+If the probe succeeds twice on the same Windows environment, update
+`docs/acceptance/mvp-windows-x64.md` to identify the committed
+`MVP CLI cancels Custom install with a Windows console control event` test and
+its `GenerateConsoleCtrlEvent(0, 0)` path, while retaining the deterministic
+in-process cancellation evidence.
 
 If the probe cannot produce a repeatable control event, do not add a flaky test. Update the final cancellation paragraph in `docs/acceptance/mvp-windows-x64.md` to say that:
 
