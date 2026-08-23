@@ -31,6 +31,7 @@ import { parseJsonOutput, runCommand } from "./support.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cliPath = join(projectRoot, "src", "cli.ts");
+const runtimeCliPath = join(projectRoot, "src", "cli.js");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 let installedRoot: string | undefined;
 let installedBinPromise: Promise<string> | undefined;
@@ -2073,6 +2074,32 @@ test("linked CLI entrypoint resolves its real path before invoking main", async 
 		await rm(linkRoot, { recursive: true, force: true });
 		await fixture.cleanup();
 	}
+});
+
+test("maps unexpected CLI entrypoint rejections to a stable failure", async () => {
+	const prelude = [
+		"let first = true;",
+		"const write = process.stdout.write.bind(process.stdout);",
+		"process.stdout.write = (...args) => {",
+		"if (first) { first = false; throw new Error('entrypoint-test-failure'); }",
+		"return write(...args);",
+		"};",
+	].join(" ");
+	const result = await runCommand({
+		file: process.execPath,
+		args: [
+			"--import",
+			`data:text/javascript,${encodeURIComponent(prelude)}`,
+			runtimeCliPath,
+			"catalog",
+			"list",
+			"--json",
+		],
+		cwd: projectRoot,
+	});
+
+	assert.equal(result.exitCode, 1);
+	assert.equal(result.stderr, "entrypoint-test-failure\n");
 });
 
 test("discovers only first-level Recipes in lexical order and preserves Step order", async () => {
