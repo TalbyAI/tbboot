@@ -470,10 +470,48 @@ public static class ConsoleControl {
   [DllImport("kernel32.dll", SetLastError = true)]
   public static extern bool FreeConsole();
   [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool SetConsoleCtrlHandler(IntPtr handlerRoutine, bool add);
+  [DllImport("kernel32.dll", SetLastError = true)]
   public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
 }
 '@
 Add-Type -TypeDefinition $source
+```
+
+Use a temporary launcher with the same `CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP`
+flags as the committed test to start a child that runs the cancellable CLI and
+exposes its process id, wait method, exit code, and handle cleanup. After the
+`Add-Type` check, the probe must execute this bounded sequence:
+
+```powershell
+$child = [ProbeProcess]::Launch($cliCommand, $consumerRoot)
+try {
+  [ConsoleControl]::FreeConsole() | Out-Null
+  if (-not [ConsoleControl]::AttachConsole([uint32]$child.Id)) {
+    throw "Unable to attach to the child console"
+  }
+  try {
+    if (-not [ConsoleControl]::SetConsoleCtrlHandler([IntPtr]::Zero, $true)) {
+      throw "Unable to ignore Ctrl+C in the probe"
+    }
+    if (-not [ConsoleControl]::GenerateConsoleCtrlEvent(0, 0)) {
+      throw "Unable to generate CTRL_C_EVENT"
+    }
+  } finally {
+    [ConsoleControl]::FreeConsole() | Out-Null
+  }
+  if (-not $child.WaitForExit(15000)) {
+    throw "The child did not exit within 15 seconds"
+  }
+  if ($child.ExitCode -ne 130) {
+    throw "The child did not exit through cancellation: $($child.ExitCode)"
+  }
+} finally {
+  if (-not $child.HasExited) {
+    taskkill.exe /PID $child.Id /T /F | Out-Null
+  }
+  $child.Dispose()
+}
 ```
 
 Use the result only as an implementation decision. Do not commit the probe or a native helper.
