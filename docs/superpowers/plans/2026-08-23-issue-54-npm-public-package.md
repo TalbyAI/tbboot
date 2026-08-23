@@ -132,11 +132,16 @@ Create `scripts/check-pack.mjs` with this complete behavior:
 ```js
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const npm =
+  process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
+const npmArgs =
+  process.platform === "win32"
+    ? ["/d", "/s", "/c", "npm.cmd pack --dry-run --json"]
+    : ["pack", "--dry-run", "--json"];
 
 function sourceFiles(directory) {
   const files = [];
@@ -157,11 +162,15 @@ const expected = new Set([
   "schemas/contract-v1.json",
   ...sourceFiles("src"),
 ]);
-const result = spawnSync(npm, ["pack", "--dry-run", "--json"], {
+const result = spawnSync(npm, npmArgs, {
   cwd: root,
   encoding: "utf8",
 });
 
+if (result.error !== undefined) {
+  process.stderr.write(`Could not run npm: ${result.error.message}\n`);
+  process.exit(1);
+}
 if (result.status !== 0) {
   process.stderr.write(result.stderr || `npm pack failed with ${result.status}\n`);
   process.exit(1);
@@ -190,8 +199,8 @@ console.log(`Package contains ${actual.size} expected files.`);
 
 Run: `npm run check:pack`
 
-Expected before Task 1's allowlist/documentation is present: FAIL, because the
-required public files and package metadata are not yet in the tarball.
+Expected before this check script is created: FAIL because the command cannot
+find `scripts/check-pack.mjs`.
 
 - [ ] **Step 2: Run the check after Task 1 to verify it passes**
 
@@ -233,7 +242,7 @@ git commit -m "ci: verify npm package contents"
 npm run check:pack
 npm run typecheck
 npm run build
-npm run check:md -- README.md
+npm run check:md
 npm run check:code
 ```
 

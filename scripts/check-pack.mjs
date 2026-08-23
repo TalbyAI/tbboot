@@ -4,7 +4,8 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const npm = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
+const npm =
+	process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
 const npmArgs =
 	process.platform === "win32"
 		? ["/d", "/s", "/c", "npm.cmd pack --dry-run --json"]

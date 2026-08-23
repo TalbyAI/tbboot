@@ -33,6 +33,8 @@ npx --yes @talby/tbboot doctor
 - npm is required for npm or `npx` installation and execution.
 - Windows x64 is the only guaranteed platform for version `0.1.0`.
 - macOS, Linux, WSL, and ARM64 are outside the supported guarantee.
+- `pnpx` and equivalent executors are expected to work but are outside the
+  official `0.1.0` acceptance matrix.
 - PowerShell `>=7.6 <8` is required only when a Consumer repository uses a
   Custom step with the `pwsh` runtime.
 - Windows PowerShell 5.1 is not supported as a Custom runtime.
