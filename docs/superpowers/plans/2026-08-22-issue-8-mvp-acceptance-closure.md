@@ -486,7 +486,9 @@ exposes its process id, wait method, exit code, and handle cleanup. After the
 ```powershell
 $child = [ProbeProcess]::Launch($cliCommand, $consumerRoot)
 try {
-  if (-not $child.WaitForMarker("cancel-ready", 15000)) {
+  $deadline = [DateTime]::UtcNow.AddSeconds(15)
+  $remaining = [Math]::Max(0, [int]($deadline.Subtract([DateTime]::UtcNow).TotalMilliseconds))
+  if (-not $child.WaitForMarker("cancel-ready", $remaining)) {
     throw "The CLI did not reach cancel-ready within 15 seconds"
   }
   [ConsoleControl]::FreeConsole() | Out-Null
@@ -503,7 +505,8 @@ try {
   } finally {
     [ConsoleControl]::FreeConsole() | Out-Null
   }
-  if (-not $child.WaitForExit(15000)) {
+  $remaining = [Math]::Max(0, [int]($deadline.Subtract([DateTime]::UtcNow).TotalMilliseconds))
+  if ($remaining -le 0 -or -not $child.WaitForExit($remaining)) {
     throw "The child did not exit within 15 seconds"
   }
   if ($child.ExitCode -ne 130) {
