@@ -24,12 +24,14 @@
 ### Task 1: Make the root package publicly distributable
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Create: `README.md`
 - Create: `LICENSE`
 
 **Interfaces:**
+
 - npm consumes the metadata and `files` allowlist from `package.json`.
 - Consumers use the documented `tbboot` binary and the existing CLI commands.
 
@@ -112,10 +114,12 @@ git commit -m "feat: prepare public npm package metadata"
 ### Task 2: Validate the exact tarball and wire it into CI
 
 **Files:**
+
 - Create: `scripts/check-pack.mjs`
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
+
 - `npm run check:pack` exits `0` only when `npm pack --dry-run --json` contains
   exactly the required package files.
 - CI invokes `npm run check:pack` on Windows x64 with Node `24.12.x` and
@@ -220,6 +224,7 @@ git commit -m "ci: verify npm package contents"
 ### Task 3: Run the complete verification and prepare handoff
 
 **Files:**
+
 - Verify: `package.json`, `package-lock.json`, `README.md`, `LICENSE`, `scripts/check-pack.mjs`, `.github/workflows/ci.yml`
 
 - [ ] **Step 1: Run focused checks**
