@@ -1,15 +1,64 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const windows = process.platform === "win32";
 const npm =
-	process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm";
+	windows ? (process.env.ComSpec ?? "cmd.exe") : "npm";
 const npmArgs =
-	process.platform === "win32"
+	windows
 		? ["/d", "/s", "/c", "npm.cmd pack --dry-run --json"]
 		: ["pack", "--dry-run", "--json"];
+
+function quoteWindows(value) {
+	if (!/[\s"&|<>^]/.test(value)) return value;
+	return `"${value.replaceAll('"', '""')}"`;
+}
+
+function runNpm(args, cwd) {
+	const command = windows
+		? spawnSync(
+				npm,
+				["/d", "/s", "/c", ["npm.cmd", ...args.map(quoteWindows)].join(" ")],
+				{ cwd, encoding: "utf8" },
+			)
+		: spawnSync("npm", args, { cwd, encoding: "utf8" });
+	if (command.error !== undefined || command.status !== 0) {
+		throw new Error(
+			command.stderr ||
+				command.stdout ||
+				command.error?.message ||
+				`npm command failed with ${command.status}`,
+		);
+	}
+	return command;
+}
+
+function runBinary(command, args, cwd) {
+	const result = windows
+		? spawnSync(
+				process.env.ComSpec ?? "cmd.exe",
+				[
+					"/d",
+					"/s",
+					"/c",
+					[quoteWindows(command), ...args.map(quoteWindows)].join(" "),
+				],
+				{ cwd, encoding: "utf8" },
+			)
+		: spawnSync(command, args, { cwd, encoding: "utf8" });
+	if (result.error !== undefined || result.status !== 0) {
+		const detail =
+			result.stderr ||
+			result.stdout ||
+			result.error?.message ||
+			`binary command failed with ${result.status}`;
+		throw new Error(`${detail}\nCommand: ${command}`);
+	}
+}
 
 function sourceFiles(directory) {
 	const files = [];
@@ -74,3 +123,71 @@ if (missing.length > 0 || unexpected.length > 0) {
 }
 
 console.log(`Package contains ${actual.size} expected files.`);
+
+const installRoot = mkdtempSync(join(tmpdir(), "tbboot-pack-install-"));
+try {
+	const pack = runNpm(
+		["pack", "--ignore-scripts", "--json", "--pack-destination", installRoot],
+		root,
+	);
+	const tarball = join(installRoot, JSON.parse(pack.stdout)[0].filename);
+	const localRoot = join(installRoot, "local");
+	mkdirSync(localRoot);
+	runNpm(
+		[
+			"install",
+			"--ignore-scripts",
+			"--no-package-lock",
+			"--prefix",
+			localRoot,
+			tarball,
+		],
+		localRoot,
+	);
+	runBinary(
+		join(localRoot, "node_modules", ".bin", windows ? "tbboot.cmd" : "tbboot"),
+		["catalog", "list", "--json"],
+		localRoot,
+	);
+	console.log("Local install: OK");
+
+	const globalRoot = join(installRoot, "global");
+	mkdirSync(globalRoot);
+	runNpm(
+		[
+			"install",
+			"--global",
+			"--ignore-scripts",
+			"--prefix",
+			globalRoot,
+			tarball,
+		],
+		root,
+	);
+	runBinary(
+		join(globalRoot, windows ? "tbboot.cmd" : "bin/tbboot"),
+		["catalog", "list", "--json"],
+		globalRoot,
+	);
+	console.log("Global install: OK");
+
+	const npxRoot = join(installRoot, "npx");
+	mkdirSync(npxRoot);
+	runNpm(
+		[
+			"exec",
+			"--yes",
+			"--package",
+			tarball,
+			"--",
+			"tbboot",
+			"catalog",
+			"list",
+			"--json",
+		],
+		npxRoot,
+	);
+	console.log("npx install: OK");
+} finally {
+	rmSync(installRoot, { force: true, recursive: true });
+}
