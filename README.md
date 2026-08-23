@@ -31,6 +31,8 @@ npx --yes @talby/tbboot doctor
 
 - Node.js `>=24.12 <25` is required.
 - npm is required for npm or `npx` installation and execution.
+- The package ships JavaScript entrypoints generated from its TypeScript source
+  so Node can execute it after npm installs it under `node_modules`.
 - Windows x64 is the only guaranteed platform for version `0.1.0`.
 - macOS, Linux, WSL, and ARM64 are outside the supported guarantee.
 - `pnpx` and equivalent executors are expected to work but are outside the

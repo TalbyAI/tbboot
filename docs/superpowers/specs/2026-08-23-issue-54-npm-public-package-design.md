@@ -20,7 +20,12 @@ reproducible del contenido del tarball en CI.
 licencia, descripción, enlaces del repositorio, keywords, allowlist `files` y
 `publishConfig.access: "public"`. La allowlist incluirá el código de `src`, el
 schema runtime, `README.md` y `LICENSE`; npm añadirá el `package.json` requerido.
-No se añadirán scripts de lifecycle de instalación o publicación.
+El bin público apuntará a `src/cli.js`: Node 24 no permite el type-stripping de
+TypeScript dentro de `node_modules`. `tsconfig.build.json` emitirá los módulos
+JavaScript en una carpeta temporal externa y `scripts/build-runtime.mjs`
+copiará ese resultado junto a `src/**/*.ts`, reescribiendo sus imports
+relativos; no se añadirá una dependencia de runtime. No se añadirán scripts de
+lifecycle de instalación o publicación.
 
 `README.md` documentará instalación global, local y mediante `npx`,
 prerrequisitos, compatibilidad Windows x64, uso desde un Consumer repository,
@@ -50,8 +55,11 @@ crear artefactos dentro del repositorio.
 | --- | --- |
 | `package.json` | Metadata pública, allowlist y script de empaquetado |
 | `package-lock.json` | Metadata sincronizada |
+| `tsconfig.build.json` | Emisión JavaScript ejecutable para el paquete |
+| `src/*.js` | Entrypoints compilados incluidos en `src/**` |
 | `README.md` | Documentación pública mínima |
 | `LICENSE` | Licencia MIT |
+| `scripts/build-runtime.mjs` | Emisión temporal y copia de módulos JavaScript |
 | `scripts/check-pack.mjs` | Validación exacta del contenido del tarball |
 | `.github/workflows/ci.yml` | Ejecución de `npm run check:pack` sin publicar |
 

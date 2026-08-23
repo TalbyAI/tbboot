@@ -15,6 +15,8 @@
 - Node.js: `>=24.12 <25`.
 - Guaranteed platform: Windows x64 only.
 - Package contents: `package.json`, `src/**`, `schemas/contract-v1.json`, `README.md`, `LICENSE`.
+- The published bin points to JavaScript emitted in `src/**`; Node 24 cannot type-strip TypeScript under `node_modules`.
+- The published bin points to JavaScript emitted in `src/**`; Node 24 cannot type-strip TypeScript under `node_modules`.
 - No `preinstall`, `install`, `postinstall`, publish workflow, token, trusted publishing, or staged publishing.
 - Publish access: `public`; publication remains interactive and manual.
 - Do not change the functional MVP contract from Issue #8.
@@ -27,6 +29,8 @@
 
 - Modify: `package.json`
 - Modify: `package-lock.json`
+- Create: `tsconfig.build.json`
+- Create: `scripts/build-runtime.mjs`
 - Create: `README.md`
 - Create: `LICENSE`
 
@@ -60,7 +64,7 @@ Expected: exit code `1`.
 
 - [ ] **Step 3: Update package metadata and public documentation**
 
-Keep the existing scripts, dependencies, `bin`, and engine range. Change the
+Keep the existing dependencies and engine range. Change the
 package metadata to include:
 
 ```json
@@ -82,14 +86,20 @@ package metadata to include:
 ```
 
 Remove `private` and add `"check:pack": "node scripts/check-pack.mjs"` to the
-existing scripts. Create `README.md` with sections for global/local/`npx`
+existing scripts. Set `bin.tbboot` to `src/cli.js`, add `build:runtime` using
+`tsconfig.build.json`, and make `build` emit the JavaScript modules before
+checking `src/cli.js`. Create `README.md` with sections for global/local/`npx`
 installation, Node/npm and Windows x64 prerequisites, Consumer repository
 usage, `doctor`, `install --dry-run`, `install`, `uninstall`, and `catalog`.
 Document that Custom steps execute explicitly authorized code in the selected
 runtime and can change the Consumer repository; document the MVP platform and
 runtime limits and link feedback to
 `https://github.com/TalbyAI/tbboot/issues`. Create `LICENSE` with the standard
-MIT license text for TalbyAI and 2026.
+MIT license text for TalbyAI and 2026. `tsconfig.build.json` must extend the
+existing config, set `noEmit: false`, disable `allowImportingTsExtensions`,
+enable `rewriteRelativeImportExtensions`, and compile `src/**/*.ts`.
+`scripts/build-runtime.mjs` must run that config to an OS temporary directory
+and copy the emitted JavaScript into `src`.
 
 - [ ] **Step 4: Synchronize the lockfile**
 
@@ -107,7 +117,7 @@ Expected: exit code `0`.
 - [ ] **Step 6: Commit the distributable package metadata**
 
 ```text
-git add package.json package-lock.json README.md LICENSE
+git add package.json package-lock.json tsconfig.build.json scripts/build-runtime.mjs README.md LICENSE src/*.js
 git commit -m "feat: prepare public npm package metadata"
 ```
 
@@ -117,6 +127,7 @@ git commit -m "feat: prepare public npm package metadata"
 
 - Create: `scripts/check-pack.mjs`
 - Modify: `.github/workflows/ci.yml`
+- Create: `src/*.js` via `npm run build`
 
 **Interfaces:**
 
@@ -131,7 +142,7 @@ Create `scripts/check-pack.mjs` with this complete behavior:
 
 ```js
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -187,6 +198,17 @@ try {
 
 const missing = [...expected].filter((path) => !actual.has(path)).sort();
 const unexpected = [...actual].filter((path) => !expected.has(path)).sort();
+const binary = JSON.parse(
+  readFileSync(join(root, "package.json"), "utf8"),
+).bin?.tbboot;
+if (typeof binary !== "string" || !binary.endsWith(".js")) {
+  console.error("The tbboot bin must point to a JavaScript entrypoint.");
+  process.exit(1);
+}
+if (!actual.has(binary)) {
+  console.error(`Missing binary: ${binary}`);
+  process.exit(1);
+}
 if (missing.length > 0 || unexpected.length > 0) {
   if (missing.length > 0) console.error(`Missing: ${missing.join(", ")}`);
   if (unexpected.length > 0)

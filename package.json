@@ -32,7 +32,7 @@
     "node": ">=24.12 <25"
   },
   "bin": {
-    "tbboot": "src/cli.ts"
+    "tbboot": "src/cli.js"
   },
   "scripts": {
     "check:md": "markdownlint-cli2",
@@ -41,7 +41,8 @@
     "fix:md": "markdownlint-cli2 --fix",
     "fix:code": "biome check --write src test",
     "fix": "npm run fix:md && npm run fix:code",
-    "build": "node --check src/cli.ts",
+    "build": "npm run build:runtime && node --check src/cli.js",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "check:pack": "node scripts/check-pack.mjs",
     "doctor": "node src/cli.ts doctor",
     "test": "node --test \"test/**/*.test.ts\"",

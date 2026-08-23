@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +55,17 @@ try {
 
 const missing = [...expected].filter((path) => !actual.has(path)).sort();
 const unexpected = [...actual].filter((path) => !expected.has(path)).sort();
+const binary = JSON.parse(
+	readFileSync(join(root, "package.json"), "utf8"),
+).bin?.tbboot;
+if (typeof binary !== "string" || !binary.endsWith(".js")) {
+	console.error("The tbboot bin must point to a JavaScript entrypoint.");
+	process.exit(1);
+}
+if (!actual.has(binary)) {
+	console.error(`Missing binary: ${binary}`);
+	process.exit(1);
+}
 if (missing.length > 0 || unexpected.length > 0) {
 	if (missing.length > 0) console.error(`Missing: ${missing.join(", ")}`);
 	if (unexpected.length > 0)
