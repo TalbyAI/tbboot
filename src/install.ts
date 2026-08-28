@@ -565,22 +565,6 @@ async function applyInstallPlan(
 						stopped ||= report(installation);
 						continue;
 					}
-				}
-				if (registered.executor.check === undefined) {
-					action.state = "ok";
-					continue;
-				}
-				const check = await registered.executor.check(
-					registered.context,
-					previousState,
-				);
-				if (check.changed) envelope.changed = true;
-				if (check.status !== "ok") {
-					stopped ||= report(check);
-					continue;
-				}
-				action.state = "ok";
-				if (installation !== undefined) {
 					const effect = extensionEffect(
 						registered,
 						previousState,
@@ -597,6 +581,20 @@ async function applyInstallPlan(
 							})) || envelope.changed;
 					}
 				}
+				if (registered.executor.check === undefined) {
+					action.state = "ok";
+					continue;
+				}
+				const check = await registered.executor.check(
+					registered.context,
+					previousState,
+				);
+				if (check.changed) envelope.changed = true;
+				if (check.status !== "ok") {
+					stopped ||= report(check);
+					continue;
+				}
+				action.state = "ok";
 			} catch (error) {
 				if (isCancellation(error)) {
 					cancelled = true;
@@ -1566,10 +1564,13 @@ async function applyUninstallState(
 			} catch (error) {
 				if (isCancellation(error)) {
 					cancelled = true;
+					const custom = record.effect.type === "custom";
 					envelope.diagnostics.push({
-						code: "custom-cancelled",
+						code: custom ? "custom-cancelled" : "step-cancelled",
 						severity: "error",
-						message: "Custom uninstall was cancelled",
+						message: custom
+							? "Custom uninstall was cancelled"
+							: "Step uninstall was cancelled",
 						source: record.action.source,
 						recipe: record.effect.recipe,
 						step: record.effect.step,

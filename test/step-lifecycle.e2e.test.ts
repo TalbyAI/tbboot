@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 import { runDoctor } from "../src/doctor.ts";
 import { runInstall, runUninstall } from "../src/install.ts";
 import {
@@ -158,6 +159,81 @@ test("a registered Step schema error remains fatal even when optional", async ()
 			"step-schema-validation-failed",
 		);
 		assert.equal(result.envelope.diagnostics[0]?.severity, "error");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("persists an install-only Step effect so uninstall can run without check", async () => {
+	const type = "team.test.install-only";
+	let uninstalled = false;
+	registerStepType(
+		definition(type, () => ({
+			install: async () => ({
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			}),
+			uninstall: async (_context, state) => {
+				assert.deepEqual(state, { installed: true });
+				uninstalled = true;
+				return { status: "ok", changed: true };
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+
+		const uninstall = await runUninstall(join(fixture.root, "consumer"), {});
+		assert.equal(uninstall.exitCode, 0);
+		assert.equal(uninstall.envelope.actions[0]?.state, "removed");
+		assert.equal(uninstalled, true);
+		const state = parse(
+			await readFile(
+				join(fixture.root, "consumer", ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: unknown[] };
+		assert.deepEqual(state.effects, []);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("reports Step cancellation during registered uninstall with exit code 130", async () => {
+	const type = "team.test.cancelled-uninstall";
+	registerStepType(
+		definition(type, () => ({
+			install: async () => ({
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			}),
+			uninstall: async () => {
+				throw Object.assign(new Error("cancelled"), { code: "cancelled" });
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+
+		const uninstall = await runUninstall(join(fixture.root, "consumer"), {});
+		assert.equal(uninstall.exitCode, 130);
+		assert.equal(uninstall.envelope.diagnostics[0]?.code, "step-cancelled");
 	} finally {
 		await fixture.cleanup();
 	}
