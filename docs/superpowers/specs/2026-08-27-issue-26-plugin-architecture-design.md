@@ -2,7 +2,7 @@
 title: Arquitectura de extensiones para Step types, runtimes y Source providers
 version: 0.x-design
 date_created: 2026-08-27
-last_updated: 2026-08-27
+last_updated: 2026-08-28
 owner: tbboot
 tags:
   - architecture
@@ -135,6 +135,10 @@ Los siguientes nombres son contratos técnicos de esta especificación:
 - **COMP-004:** No habrá migraciones pre-`1.0` por defecto.
 - **COMP-005:** Una extensión deberá declarar la API del host que necesita y
   esa compatibilidad se resolverá antes de validar o ejecutar Recipes.
+- **COMP-006:** La recuperación de estado opaco requerirá por defecto la
+  identidad exacta del artefacto que lo produjo. Una extensión compatible solo
+  podrá recuperar estado mediante un schema, una migración y una comprobación
+  de compatibilidad explícitos.
 
 ### Requisitos de seguridad
 
@@ -155,6 +159,10 @@ Los siguientes nombres son contratos técnicos de esta especificación:
   procesos.
 - **SEC-007:** Las referencias de Source no contendrán secretos. Red,
   credenciales y otros accesos deberán declararse como capacidades.
+- **SEC-008:** La huella propuesta por un `Source provider` no será confiable
+  hasta que el host la verifique contra el contenido materializado o contra una
+  atestación firmada verificable. Solo la huella verificada podrá usarse en
+  confianza, lockfiles, deduplicación o caché.
 
 ### Restricciones
 
@@ -377,15 +385,95 @@ host sobre resultados, timeout, cancelación, seguridad o privilegios.
 
 ### 4.7 Protocolo out-of-process
 
-El protocolo lógico común será JSON por stdin/stdout:
+El protocolo lógico común será `json-stdio-v1` sobre stdin/stdout. Las Issues #11
+y #17 ya fijan la forma parcial `{ status, changed, message?, details? }`;
+esta especificación la hace explícita y añade el contexto y los diagnósticos
+que necesita un `Step` extensible:
+
+```ts
+type JsonStdioV1Request = {
+  protocol: "json-stdio-v1"
+  operation: "check" | "install" | "uninstall"
+  context: {
+    recipe: JsonValue
+    step: JsonValue
+    source?: {
+      identity: SourceIdentity
+      revision: SourceRevision
+      content: {
+        readOnly: true
+        representation: "virtual" | "materialized"
+        root?: string
+        entries?: Array<{
+          path: string
+          kind: "file" | "directory"
+          content?: string
+          encoding?: "utf8" | "base64"
+        }>
+      }
+    }
+    state?: JsonValue
+    capabilities: {
+      granted: Capability[]
+      denied: Capability[]
+    }
+    cancellation: {
+      requested: boolean
+      deadline?: string
+    }
+  }
+}
+
+type JsonStdioV1Response = {
+  protocol: "json-stdio-v1"
+  operation: "check" | "install" | "uninstall"
+  status: "ok" | "missing" | "drift" | "error"
+  changed: boolean
+  message?: string
+  details?: JsonValue
+  state?: JsonValue
+  diagnostics?: Array<{
+    code: string
+    severity: "info" | "warning" | "error"
+    message: string
+    details?: JsonValue
+  }>
+  error?: {
+    code: string
+    message: string
+    details?: JsonValue
+  }
+}
+```
+
+`content` es la proyección serializable y de solo lectura de `SourceContent`:
+`representation: "materialized"` exige un `root` que sea una proyección
+temporal creada por el host, mientras `representation: "virtual"` exige
+`entries` con rutas relativas seguras. No se mezclan ambas representaciones. El
+adaptador del runtime traduce la proyección al contrato lógico; no concede
+acceso a rutas ambientales. `state` es el estado previo en la petición y el
+nuevo estado que el executor devuelve explícitamente en la respuesta.
 
 - una petición JSON por operación;
 - un resultado JSON por operación;
 - stderr reservado para logs y diagnósticos no estructurales;
-- validación del resultado por el host;
+- validación de la petición y del resultado por el host;
 - timeout y cancelación controlados por el host;
 - ejecución sin shell implícito;
 - terminación del árbol de procesos cuando corresponda.
+
+Para mantener la compatibilidad del protocolo, el host exige la versión y la
+operación esperadas, valida todos los campos obligatorios y sus tipos, comprueba
+que `operation` coincide en petición y respuesta y rechaza protocolos,
+operaciones, estados o capacidades no válidos. Un mensaje es un único
+documento JSON; cualquier output adicional en stdout, JSON malformado o
+respuesta con campos de contrato desconocidos invalida la operación. Los
+campos `details`, `state` y `error.details` son valores opacos JSON; no se
+interpretan para conceder permisos. No se promete compatibilidad entre
+versiones de protocolo durante `0.x`; los cambios incompatibles requieren otro
+identificador de protocolo. El host solo persiste `state` cuando la operación y
+el resultado lo permiten, y normaliza los errores de transporte, timeout y
+cancelación aunque el proceso no alcance a devolver una respuesta.
 
 El runtime adapta comando, argumentos, entorno, transporte y lanzamiento. No
 adapta los estados lógicos del lifecycle.
@@ -395,26 +483,55 @@ adapta los estados lógicos del lifecycle.
 Un futuro `Source provider` se registra por separado:
 
 ```ts
+type SourceProviderContext = {
+  grantedCapabilities: readonly Capability[]
+  deniedCapabilities: readonly Capability[]
+  grantedServices: {
+    network?: NetworkService
+    credentialsRead?: CredentialsReadService
+    state?: StateService
+  }
+  require(capability: Capability): void
+}
+
 type SourceProviderDefinition = {
   id: string
   locatorSchema: JsonSchema
   selectorSchema: JsonSchema
 
-  validateLocator(locator: unknown): ValidationResult
-  validateSelector(selector: unknown): ValidationResult
-  normalizeIdentity(locator: unknown): SourceIdentity
+  validateLocator(
+    locator: unknown,
+    context: SourceProviderContext
+  ): ValidationResult
+  validateSelector(
+    selector: unknown,
+    context: SourceProviderContext
+  ): ValidationResult
+  normalizeIdentity(
+    locator: unknown,
+    context: SourceProviderContext
+  ): SourceIdentity
 
   resolveRevision(
     locator: SourceLocator,
-    selector?: SourceSelector
+    selector: SourceSelector | undefined,
+    context: SourceProviderContext
   ): Promise<SourceRevision>
 
-  open(revision: SourceRevision): Promise<SourceHandle>
+  open(
+    revision: SourceRevision,
+    context: SourceProviderContext
+  ): Promise<SourceHandle>
 }
 ```
 
-El provider conserva la semántica específica de locator, selector, revisión,
-credenciales, red, fingerprint y materialización. El host conserva lifecycle,
+El host evalúa la política y crea el `SourceProviderContext` antes de invocar al
+provider. Cada operación conserva ese contexto y el provider debe llamar a
+`require` antes de usar un servicio; por ejemplo, `network`, `credentials.read`
+o `state.write`. Una capacidad denegada no tiene servicio concedido y hace
+fallar la operación. El provider conserva la semántica específica de locator,
+selector, revisión, fingerprint y materialización, pero no obtiene red,
+credenciales o estado mediante acceso ambiental. El host conserva lifecycle,
 limpieza, rutas seguras, confianza, diagnósticos y uso por los Steps.
 
 ```ts
@@ -426,6 +543,13 @@ type SourceHandle = {
   close(): Promise<void>
 }
 ```
+
+La huella que el provider entrega es una propuesta no confiable. Antes de
+aceptar el `SourceHandle` y antes de usar esa huella en confianza, lockfile,
+deduplicación o caché, el host debe verificarla contra un digest que calcule
+del `SourceContent` materializado, o validar una atestación firmada que vincule
+identidad, revisión, contenido y clave de confianza. Si la verificación falla,
+el Source no se puede reutilizar ni autorizar con esa huella.
 
 La identidad sigue siendo `provider + locator normalizado`; el selector no
 forma parte de la identidad y se resuelve como `Source revision`.
@@ -486,17 +610,38 @@ una instancia arbitraria se asociará a:
 
 La confianza del código de un `Source provider` y la confianza del Source que
 devuelve son decisiones separadas. El provider debe devolver la identidad
-canónica del Source y su huella para poder formar claves estables de confianza,
-lockfile, deduplicación y caché.
+canónica del Source y una huella candidata; el host debe verificar esta última
+antes de formar claves estables de confianza, lockfile, deduplicación o caché.
 
 La `Installation record` conserva la identidad del Source, revisión, Recipe,
-Step, orden, extensión, huellas, runtime seleccionado y estado opaco. Si falta
-la extensión histórica, `uninstall` advierte, conserva el efecto y continúa;
-solo una extensión exacta o compatible y autorizada puede ejecutar la
-recuperación histórica.
+Step, orden, extensión, huellas, runtime seleccionado y estado opaco. De forma
+conceptual, el estado histórico queda ligado al artefacto que lo produjo:
+
+```ts
+type HistoricalState = {
+  artifact: {
+    id: string
+    version: string
+    apiVersion: number
+    fingerprint: string
+  }
+  stepFingerprint: string
+  schema?: string
+  value: JsonValue
+}
+```
+
+Por defecto, `uninstall` solo entrega ese estado al artefacto exacto, incluida
+su huella. Un artefacto compatible pero distinto solo puede ejecutar la
+recuperación si declara el schema del estado, una migración desde la versión
+histórica y una comprobación de compatibilidad que el host valida antes de
+ejecutarlo; la compatibilidad de la API del host por sí sola no basta. No hay
+migración automática por defecto durante `0.x`. Si no existe un executor
+histórico exacto y autorizado, o la compatibilidad del estado no se puede
+demostrar, `uninstall` emite warning, conserva el efecto y continúa.
 
 Una caché persistente local puede conservar clones o materializaciones
-temporales. La reutilización requiere verificar identidad, revisión y huella;
+temporales. La reutilización requiere identidad, revisión y huella verificadas;
 la caché nunca concede confianza. Los comandos futuros mínimos son `cache list`
 y `cache prune`.
 
@@ -522,10 +667,12 @@ y `cache prune`.
   su extensión o runtime estén registrados.
 - **AC-007:** Dado un executor que devuelve estado opaco, cuando termina
   `install`, entonces el host persiste el estado con identidad de extensión y
-  huella del Step y lo entrega posteriormente a `check`/`uninstall`.
+  huella del Step y solo lo entrega a un executor histórico exacto, o a uno
+  distinto que haya pasado schema, migración y compatibilidad del estado.
 - **AC-008:** Dado un `Source provider` futuro, cuando resuelve un selector,
-  entonces devuelve identidad canónica, `Source revision`, huella,
-  `SourceContent` de solo lectura y limpieza explícita.
+  entonces devuelve identidad canónica, `Source revision`, huella candidata,
+  `SourceContent` de solo lectura y limpieza explícita, y el host verifica la
+  huella antes de usarla como clave.
 - **AC-009:** Dado un manifiesto de extensión futuro, cuando su API o política
   no es compatible, entonces el host lo rechaza antes de activar su código.
 - **AC-010:** Dado que tbboot sigue por debajo de `1.0`, cuando se introducen
@@ -536,6 +683,13 @@ y `cache prune`.
   productivos.
 - **AC-012:** Dado que no queda una pregunta técnica bloqueante, cuando se
   cierra el diseño, entonces no se construye el prototipo de #26.
+- **AC-013:** Dado un `Source provider` que necesita red, credenciales o estado,
+  cuando el host lo invoca, entonces recibe un contexto explícito y no puede
+  usar una capacidad denegada ni acceso ambiental.
+- **AC-014:** Dado un Step out-of-process, cuando el runtime intercambia su
+  petición y respuesta, entonces usa `json-stdio-v1`, el host valida ambos
+  payloads y mantiene bajo su control lifecycle, timeout, cancelación y
+  errores de transporte.
 
 ## 6. Test Automation Strategy
 
@@ -717,10 +871,11 @@ uninstall histórico producido por la huella anterior.
 ### Source provider remoto
 
 Un provider remoto puede requerir `network`, `credentials.read` y `state.write`.
-Esas capacidades se evalúan antes de abrir el Source. El provider devuelve la
-identidad canónica, resuelve la revisión y entrega `SourceContent` de solo
-lectura. El host libera el `SourceHandle` también cuando la operación se
-cancela.
+Esas capacidades se evalúan antes de abrir el Source y se entregan mediante el
+`SourceProviderContext`; el provider no las obtiene de forma ambiental. El
+provider devuelve la identidad canónica, resuelve la revisión y entrega
+`SourceContent` de solo lectura. El host verifica la huella antes de reutilizar
+el Source y libera el `SourceHandle` también cuando la operación se cancela.
 
 ### Casos de optionalidad
 
@@ -747,7 +902,7 @@ condiciones:
 - la selección de runtime es determinista y diagnóstica;
 - in-process y out-of-process tienen reglas explícitas de confianza;
 - la autorización de `Custom` y futuros tipos arbitrarios es por instancia;
-- el estado opaco y la recuperación histórica están definidos;
+- el estado opaco y la recuperación histórica exacta o migrada están definidos;
 - `schemaVersion: 1` y la falta de compatibilidad pre-`1.0` están explícitas;
 - `Source provider`, `SourceHandle` y `SourceContent` tienen frontera clara;
 - la activación futura de extensiones es explícita y previa a la ejecución;
