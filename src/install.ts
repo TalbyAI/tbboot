@@ -14,11 +14,12 @@ import type {
 	CustomStateEffect,
 	CustomStep,
 	Diagnostic,
+	ExtensionStateEffect,
 	LockfileDocument,
 	StateDocument,
 	StateEffect,
 } from "./contract.ts";
-import { validateDocument } from "./contract.ts";
+import { validateDocument, validateStep } from "./contract.ts";
 import {
 	sourceFingerprint as calculateSourceFingerprint,
 	isCancellation,
@@ -31,21 +32,26 @@ import {
 	inspectManagedBlock,
 	type LocalInstallPlan,
 	type PlannedArtifact,
+	type PlannedStep,
 	planLocalInstall,
 	scanManagedBlock,
+	sourceReferenceKey,
 } from "./doctor.ts";
-import {
-	materializeGitSource,
-	normalizeGitPath,
-	normalizeGitRepository,
-} from "./git.ts";
+import { materializeGitSource } from "./git.ts";
 import {
 	errorMessage,
 	finish,
 	isInside,
 	isNotFound,
 	normalizeNewlines,
+	throwIfCancelled,
 } from "./shared.ts";
+import type { JsonValue, StepResult } from "./steps.ts";
+import {
+	type StepExecutionContext,
+	type StepExecutor,
+	stepTypeRegistry,
+} from "./steps.ts";
 
 export type InstallEnvelope = {
 	schemaVersion: 1;
@@ -157,17 +163,14 @@ function stateKey(
 	effect: Pick<StateEffect, "source" | "recipe" | "step" | "type"> & {
 		target?: string;
 		marker?: string;
+		stepType?: string;
 	},
 ): string {
-	const source =
-		effect.source.provider === "local"
-			? `local:${resolve(consumerRoot, effect.source.locator.path)}`
-			: `git:${normalizeGitRepository(consumerRoot, effect.source.locator.repository)}|${normalizeGitPath(effect.source.locator.path) ?? ""}`;
 	return JSON.stringify([
-		source,
+		sourceReferenceKey(consumerRoot, effect.source),
 		effect.recipe,
 		effect.step,
-		effect.type,
+		effect.type === "extension" ? effect.stepType : effect.type,
 		"target" in effect ? effect.target : "",
 		effect.marker ?? "",
 	]);
@@ -271,6 +274,36 @@ function customEffect(
 		type: "custom",
 		uninstallSupported: step.prepared.uninstallSupported,
 	};
+}
+
+function extensionEffect(
+	step: PlannedStep,
+	state: JsonValue | undefined,
+	includeState: boolean,
+): ExtensionStateEffect {
+	return {
+		source: step.source,
+		...(step.revision === undefined ? {} : { revision: step.revision }),
+		sourceFingerprint: step.sourceFingerprint,
+		recipe: step.recipe,
+		step: step.step,
+		type: "extension",
+		stepType: step.type,
+		extension: step.definition.extension,
+		optional: step.optional,
+		...(includeState ? { state } : {}),
+	};
+}
+
+function sameExtensionIdentity(
+	left: ExtensionStateEffect["extension"],
+	right: ExtensionStateEffect["extension"],
+): boolean {
+	return (
+		left.id === right.id &&
+		left.version === right.version &&
+		left.fingerprint === right.fingerprint
+	);
 }
 
 function sameEffect(
@@ -478,6 +511,9 @@ async function applyInstallPlan(
 	const customByAction = new Map(
 		plan.customSteps.map((custom) => [custom.action, custom]),
 	);
+	const registeredByAction = new Map<ArtifactAction, PlannedStep>(
+		plan.registeredSteps.map((step) => [step.action, step]),
+	);
 	let stderr = "";
 	let cancelled = false;
 	let stopped = false;
@@ -487,6 +523,127 @@ async function applyInstallPlan(
 			break;
 		}
 		if (stopped) break;
+		if (
+			action.type !== "custom" &&
+			action.type !== "file" &&
+			action.type !== "file-fragment"
+		) {
+			const registered = registeredByAction.get(action);
+			if (registered === undefined) continue;
+			registered.context.cancellation.signal =
+				options.signal ?? registered.context.cancellation.signal;
+			const existing = effects.get(
+				stateKey(plan.consumerRoot, {
+					source: registered.source,
+					recipe: registered.recipe,
+					step: registered.step,
+					type: "extension",
+					stepType: registered.type,
+				}),
+			) as Extract<StateEffect, { type: "extension" }> | undefined;
+			const matchingEffect =
+				existing !== undefined &&
+				sameExtensionIdentity(
+					existing.extension,
+					registered.definition.extension,
+				)
+					? existing
+					: undefined;
+			let previousState = matchingEffect?.state;
+			let includeState =
+				matchingEffect !== undefined && Object.hasOwn(matchingEffect, "state");
+			const persistEffect = async (): Promise<void> => {
+				const effect = extensionEffect(registered, previousState, includeState);
+				const key = stateKey(plan.consumerRoot, effect);
+				const current = effects.get(key);
+				if (sameEffect(current, effect)) return;
+				const sequenced = { ...effect, sequence: sequence++ };
+				effects.set(key, sequenced);
+				envelope.changed =
+					(await persistState(plan.consumerRoot, {
+						schemaVersion: 1,
+						effects: [...effects.values()],
+					})) || envelope.changed;
+			};
+			const report = (result: StepResult): boolean => {
+				action.state = result.status;
+				if (result.status === "ok") return false;
+				envelope.diagnostics.push({
+					code: `step-${result.status}`,
+					severity: registered.optional ? "warning" : "error",
+					message:
+						result.message ?? `Step returned ${result.status} during install`,
+					source: registered.sourceRoot,
+					recipe: registered.recipe,
+					step: registered.step,
+				});
+				return !registered.optional;
+			};
+			try {
+				if (registered.executor.install !== undefined) {
+					const installation = await registered.executor.install(
+						registered.context,
+						previousState,
+					);
+					throwIfCancelled(options.signal);
+					if (installation.changed) envelope.changed = true;
+					if (Object.hasOwn(installation, "state")) {
+						previousState = installation.state;
+						includeState = true;
+					}
+					if (installation.status !== "ok") {
+						stopped ||= report(installation);
+						continue;
+					}
+					await persistEffect();
+				}
+				if (registered.executor.check === undefined) {
+					action.state = "ok";
+					continue;
+				}
+				const check = await registered.executor.check(
+					registered.context,
+					previousState,
+				);
+				throwIfCancelled(options.signal);
+				if (check.changed) envelope.changed = true;
+				if (check.status !== "ok") {
+					stopped ||= report(check);
+					continue;
+				}
+				if (Object.hasOwn(check, "state")) {
+					previousState = check.state;
+					includeState = true;
+				}
+				await persistEffect();
+				action.state = "ok";
+			} catch (error) {
+				if (isCancellation(error)) {
+					cancelled = true;
+					stopped = true;
+					envelope.diagnostics.push({
+						code: "step-cancelled",
+						severity: "error",
+						message: "Step execution was cancelled",
+						source: registered.sourceRoot,
+						recipe: registered.recipe,
+						step: registered.step,
+					});
+					continue;
+				}
+				action.state = "error";
+				envelope.diagnostics.push({
+					code: "step-error",
+					severity: registered.optional ? "warning" : "error",
+					message: errorMessage(error),
+					source: registered.sourceRoot,
+					recipe: registered.recipe,
+					step: registered.step,
+				});
+				if (!registered.optional) stopped = true;
+			}
+			continue;
+		}
 		if (action.type === "custom") {
 			const custom = customByAction.get(action);
 			if (custom?.prepared === undefined) continue;
@@ -691,6 +848,15 @@ type HistoricalCustom = {
 	cleanup?: () => Promise<void>;
 };
 
+type HistoricalExtension = {
+	sourceRoot: string;
+	optional: boolean;
+	executor: StepExecutor;
+	context?: StepExecutionContext;
+	state?: JsonValue;
+	cleanup?: () => Promise<void>;
+};
+
 type UninstallRecord = {
 	effect: StateEffect;
 	action: ArtifactAction;
@@ -704,6 +870,7 @@ type UninstallRecord = {
 	targetPath?: string;
 	fragmentRange?: { start: number; end: number };
 	custom?: HistoricalCustom;
+	extension?: HistoricalExtension;
 };
 
 function effectSource(effect: StateEffect): string {
@@ -717,8 +884,10 @@ function uninstallAction(effect: StateEffect): ArtifactAction {
 		source: effectSource(effect),
 		recipe: effect.recipe,
 		step: effect.step,
-		type: effect.type,
-		...(effect.type === "custom" ? {} : { target: effect.target }),
+		type: effect.type === "extension" ? effect.stepType : effect.type,
+		...(effect.type === "custom" || effect.type === "extension"
+			? {}
+			: { target: effect.target }),
 		state: "blocked",
 	};
 }
@@ -916,6 +1085,105 @@ async function historicalCustom(
 	}
 }
 
+async function historicalExtension(
+	root: string,
+	effect: Extract<StateEffect, { type: "extension" }>,
+): Promise<{
+	extension: HistoricalExtension;
+	unsupported?: { code: string; message: string };
+}> {
+	let sourceRoot = effectSource(effect);
+	let cleanup: (() => Promise<void>) | undefined;
+	const unavailable = (
+		message: string,
+		code = "extension-effect-unmatched",
+	) => ({
+		extension: {
+			sourceRoot,
+			optional: effect.optional,
+			executor: {},
+			cleanup,
+		},
+		unsupported: { code, message },
+	});
+	try {
+		const source = await historicalSource(root, effect);
+		sourceRoot = source.sourceRoot;
+		cleanup = source.cleanup;
+	} catch (error) {
+		return unavailable(
+			`Unable to recover historical Step type ${effect.stepType}: ${errorMessage(error)}`,
+			"uninstall-unsupported",
+		);
+	}
+	try {
+		const recipeRoot = await historicalRecipeRoot(sourceRoot, effect.recipe);
+		const result = validateDocument<"recipe">({
+			kind: "recipe",
+			text: await readFile(join(recipeRoot, "recipe.yaml"), "utf8"),
+			document: "recipe.yaml",
+			source: sourceRoot,
+			recipe: effect.recipe,
+		});
+		if (result.value === undefined)
+			return unavailable(
+				result.diagnostics[0]?.message ?? "Historical recipe is invalid",
+			);
+		const step = result.value.steps[effect.step - 1];
+		if (step === undefined || step.type !== effect.stepType)
+			return unavailable(
+				`Installation record Step type ${effect.stepType} has no matching historical Step`,
+			);
+		const definition = stepTypeRegistry.get(effect.stepType);
+		if (definition === undefined)
+			return unavailable(
+				`Historical Step type ${effect.stepType} is not registered`,
+			);
+		if (!sameExtensionIdentity(definition.extension, effect.extension))
+			return unavailable(
+				`Historical Step type ${effect.stepType} extension identity does not match`,
+			);
+		const validationDiagnostics = validateStep(step, definition, {
+			document: "recipe.yaml",
+			source: sourceRoot,
+			recipe: effect.recipe,
+			step: effect.step,
+		});
+		if (validationDiagnostics.some(({ severity }) => severity === "error"))
+			return unavailable(
+				validationDiagnostics[0]?.message ?? "Historical Step is invalid",
+			);
+		const context: StepExecutionContext = {
+			recipe: result.value,
+			step,
+			source: {
+				identity: JSON.stringify(effect.source),
+				revision: effect.revision,
+				fingerprint: effect.sourceFingerprint,
+			},
+			mode: "in-process",
+			services: {},
+			capabilities: definition.capabilities,
+			cancellation: { signal: new AbortController().signal },
+		};
+		return {
+			extension: {
+				sourceRoot,
+				optional: effect.optional,
+				executor: definition.createExecutor(step, context),
+				context,
+				...(Object.hasOwn(effect, "state") ? { state: effect.state } : {}),
+				cleanup,
+			},
+		};
+	} catch (error) {
+		return unavailable(
+			`Unable to prepare historical Step type ${effect.stepType}: ${errorMessage(error)}`,
+			"uninstall-unsupported",
+		);
+	}
+}
+
 function orderedEffects(state: StateDocument): StateEffect[] {
 	return state.effects
 		.map((effect, index) => ({ effect, order: effect.sequence ?? index }))
@@ -950,6 +1218,47 @@ async function applyUninstallState(
 		for (const effect of orderedEffects(state)) {
 			const action = uninstallAction(effect);
 			envelope.actions.push(action);
+			if (effect.type === "extension") {
+				const prepared = await historicalExtension(consumerRoot, effect);
+				if (prepared.extension.cleanup !== undefined)
+					cleanups.push(prepared.extension.cleanup);
+				action.source = prepared.extension.sourceRoot;
+				if (
+					prepared.unsupported === undefined &&
+					prepared.extension.executor.uninstall !== undefined &&
+					prepared.extension.context !== undefined
+				) {
+					records.push({
+						effect,
+						action,
+						optional: prepared.extension.optional,
+						status: "ready",
+						extension: prepared.extension,
+					});
+					continue;
+				}
+				action.state = "unsupported";
+				const unsupported = prepared.unsupported ?? {
+					code: "uninstall-unsupported",
+					message: `Step type ${effect.stepType} does not declare an uninstall operation`,
+				};
+				envelope.diagnostics.push({
+					code: unsupported.code,
+					severity: "warning",
+					message: unsupported.message,
+					source: prepared.extension.sourceRoot,
+					recipe: effect.recipe,
+					step: effect.step,
+				});
+				records.push({
+					effect,
+					action,
+					optional: prepared.extension.optional,
+					status: "unsupported",
+					extension: prepared.extension,
+				});
+				continue;
+			}
 			if (effect.type === "custom") {
 				const prepared = await historicalCustom(
 					consumerRoot,
@@ -1173,6 +1482,35 @@ async function applyUninstallState(
 				continue;
 			}
 			try {
+				if (record.effect.type === "extension") {
+					const extension = record.extension;
+					const operation = extension?.executor.uninstall;
+					if (extension?.context === undefined || operation === undefined)
+						continue;
+					extension.context.cancellation.signal =
+						options.signal ?? extension.context.cancellation.signal;
+					const outcome = await operation(extension.context, extension.state);
+					throwIfCancelled(options.signal);
+					if (outcome.changed) envelope.changed = true;
+					if (outcome.status !== "ok") {
+						record.action.state = outcome.status;
+						envelope.diagnostics.push({
+							code: `step-${outcome.status}`,
+							severity: record.optional ? "warning" : "error",
+							message:
+								outcome.message ??
+								`Step returned ${outcome.status} during uninstall`,
+							source: record.action.source,
+							recipe: record.effect.recipe,
+							step: record.effect.step,
+						});
+						if (!record.optional) break;
+						continue;
+					}
+					record.action.state = "removed";
+					await checkpoint(record.effect);
+					continue;
+				}
 				if (record.effect.type === "custom") {
 					const prepared = record.custom?.prepared;
 					const operation = prepared?.uninstall;
@@ -1247,10 +1585,13 @@ async function applyUninstallState(
 			} catch (error) {
 				if (isCancellation(error)) {
 					cancelled = true;
+					const custom = record.effect.type === "custom";
 					envelope.diagnostics.push({
-						code: "custom-cancelled",
+						code: custom ? "custom-cancelled" : "step-cancelled",
 						severity: "error",
-						message: "Custom uninstall was cancelled",
+						message: custom
+							? "Custom uninstall was cancelled"
+							: "Step uninstall was cancelled",
 						source: record.action.source,
 						recipe: record.effect.recipe,
 						step: record.effect.step,

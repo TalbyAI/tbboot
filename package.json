@@ -43,6 +43,8 @@
     "fix": "npm run fix:md && npm run fix:code",
     "build": "npm run build:runtime && node --check src/cli.js",
     "build:runtime": "node scripts/build-runtime.mjs",
+    "prepack": "npm run build:runtime",
+    "pretest": "npm run build:runtime",
     "check:pack": "node scripts/check-pack.mjs",
     "doctor": "node src/cli.ts doctor",
     "test": "node --test \"test/**/*.test.ts\"",

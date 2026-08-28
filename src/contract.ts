@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 import { parseAllDocuments } from "yaml";
 import { errorMessage } from "./shared.ts";
+import type { JsonSchema, StepTypeDefinition } from "./steps.ts";
 
 const schemaId = "https://tbboot.dev/schemas/contract-v1";
 const contract = JSON.parse(
@@ -68,11 +69,15 @@ export type SourceDocument = {
 	schemaVersion: 1;
 	dependencies?: SourceDependency[];
 };
-export type FileStep = {
+export type Step = {
+	type: string;
+	optional?: boolean;
+	[key: string]: unknown;
+};
+export type FileStep = Step & {
 	type: "file" | "file-fragment";
 	input: string;
 	target: string;
-	optional?: boolean;
 };
 export type CustomOperation = {
 	runtime: "node" | "pwsh";
@@ -81,14 +86,12 @@ export type CustomOperation = {
 	script?: string;
 	content?: string;
 };
-export type CustomStep = {
+export type CustomStep = Step & {
 	type: "custom";
-	optional?: boolean;
 	check: CustomOperation;
 	install?: CustomOperation;
 	uninstall?: CustomOperation;
 };
-export type Step = FileStep | CustomStep;
 export type RecipeDocument = {
 	schemaVersion: 1;
 	steps: Step[];
@@ -131,10 +134,24 @@ export type CustomStateEffect = {
 	type: "custom";
 	uninstallSupported: boolean;
 };
+export type ExtensionStateEffect = {
+	source: SourceReference;
+	revision?: string;
+	sequence?: number;
+	sourceFingerprint: string;
+	recipe: string;
+	step: number;
+	type: "extension";
+	stepType: string;
+	extension: { id: string; version: string; fingerprint?: string };
+	optional: boolean;
+	state?: import("./steps.ts").JsonValue;
+};
 export type StateEffect =
 	| FileStateEffect
 	| FileFragmentStateEffect
-	| CustomStateEffect;
+	| CustomStateEffect
+	| ExtensionStateEffect;
 export type StateDocument = { schemaVersion: 1; effects: StateEffect[] };
 export type LockEntry =
 	| {
@@ -178,6 +195,11 @@ export type ValidateDocumentOptions<K extends DocumentKind = DocumentKind> = {
 	source?: string;
 	recipe?: string;
 };
+
+export type ValidateStepOptions = Pick<
+	ValidateDocumentOptions<"recipe">,
+	"document" | "source" | "recipe"
+> & { step: number };
 
 type DiagnosticContext = Pick<
 	Diagnostic,
@@ -333,6 +355,96 @@ function reservedDiagnostics<K extends DocumentKind>(
 		);
 	}
 	return diagnostics;
+}
+
+function stepDiagnosticPath(step: number, path: string): string {
+	const suffix = path === "" ? "" : path.startsWith("/") ? path : `/${path}`;
+	return `/steps/${step - 1}${suffix}`;
+}
+
+function completeStepSchema(definition: StepTypeDefinition): JsonSchema {
+	const properties =
+		definition.schema.properties !== null &&
+		typeof definition.schema.properties === "object" &&
+		!Array.isArray(definition.schema.properties)
+			? (definition.schema.properties as Record<string, unknown>)
+			: {};
+	const required = Array.isArray(definition.schema.required)
+		? definition.schema.required.filter(
+				(value): value is string => typeof value === "string",
+			)
+		: [];
+	return {
+		...definition.schema,
+		properties: {
+			...properties,
+			type: { const: definition.id },
+			optional: { type: "boolean" },
+		},
+		required: [...new Set(["type", ...required])],
+	};
+}
+
+export function validateStep(
+	step: Step,
+	definition: StepTypeDefinition,
+	context: ValidateStepOptions,
+): Diagnostic[] {
+	let validator: ValidateFunction<unknown>;
+	try {
+		validator = ajv.compile(completeStepSchema(definition));
+	} catch (error) {
+		return [
+			diagnostic(
+				"step-schema-invalid",
+				`Invalid schema for Step type ${definition.id}: ${errorMessage(error)}`,
+				{
+					document: context.document,
+					source: context.source,
+					recipe: context.recipe,
+					step: context.step,
+					path: stepDiagnosticPath(context.step, ""),
+				},
+			),
+		];
+	}
+
+	if (!validator(step)) {
+		return actionableErrors(validator.errors ?? []).map((error) => {
+			const path = stepDiagnosticPath(context.step, errorPath(error));
+			return diagnostic("step-schema-validation-failed", schemaMessage(error), {
+				document: context.document,
+				path,
+				source: context.source,
+				recipe: context.recipe,
+				step: context.step,
+			});
+		});
+	}
+
+	if (definition.semanticValidate === undefined) return [];
+	try {
+		const semanticDiagnostics = definition.semanticValidate(step) ?? [];
+		return semanticDiagnostics.map(({ message, path = "" }) =>
+			diagnostic("step-semantic-validation-failed", message, {
+				document: context.document,
+				path: stepDiagnosticPath(context.step, path),
+				source: context.source,
+				recipe: context.recipe,
+				step: context.step,
+			}),
+		);
+	} catch (error) {
+		return [
+			diagnostic("step-semantic-validation-failed", errorMessage(error), {
+				document: context.document,
+				path: stepDiagnosticPath(context.step, ""),
+				source: context.source,
+				recipe: context.recipe,
+				step: context.step,
+			}),
+		];
+	}
 }
 
 export function validateDocument<K extends DocumentKind>({

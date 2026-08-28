@@ -191,9 +191,21 @@
           },
           "dependencies": { "uninstall": ["install"] },
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "not": { "enum": ["file", "file-fragment", "custom"] }
+            },
+            "optional": { "type": "boolean" }
+          },
+          "additionalProperties": true
         }
-      ],
-      "discriminator": { "propertyName": "type" }
+      ]
     },
     "requirement": {
       "type": "object",
@@ -354,6 +366,36 @@
             "step": { "$ref": "#/$defs/positiveInteger" },
             "type": { "const": "custom" },
             "uninstallSupported": { "type": "boolean" }
+          },
+          "if": { "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } }, "required": ["source"] },
+          "then": { "required": ["revision"], "properties": { "revision": true } },
+          "else": { "properties": { "revision": false } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["source", "sourceFingerprint", "recipe", "step", "type", "stepType", "extension", "optional"],
+          "properties": {
+            "source": { "$ref": "#/$defs/sourceReference" },
+            "revision": { "$ref": "#/$defs/nonEmptyString" },
+            "sequence": { "$ref": "#/$defs/positiveInteger" },
+            "sourceFingerprint": { "$ref": "#/$defs/nonEmptyString" },
+            "recipe": { "$ref": "#/$defs/repositoryRelativePath" },
+            "step": { "$ref": "#/$defs/positiveInteger" },
+            "type": { "const": "extension" },
+            "stepType": { "$ref": "#/$defs/nonEmptyString" },
+            "extension": {
+              "type": "object",
+              "required": ["id", "version"],
+              "properties": {
+                "id": { "$ref": "#/$defs/nonEmptyString" },
+                "version": { "$ref": "#/$defs/nonEmptyString" },
+                "fingerprint": { "$ref": "#/$defs/nonEmptyString" }
+              },
+              "additionalProperties": false
+            },
+            "optional": { "type": "boolean" },
+            "state": {}
           },
           "if": { "properties": { "source": { "type": "object", "properties": { "provider": { "const": "git" } }, "required": ["provider"] } }, "required": ["source"] },
           "then": { "required": ["revision"], "properties": { "revision": true } },

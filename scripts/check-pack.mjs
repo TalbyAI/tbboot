@@ -72,13 +72,6 @@ function sourceFiles(directory) {
 	return files;
 }
 
-const expected = new Set([
-	"package.json",
-	"README.md",
-	"LICENSE",
-	"schemas/contract-v1.json",
-	...sourceFiles("src"),
-]);
 const result = spawnSync(npm, npmArgs, {
 	cwd: root,
 	encoding: "utf8",
@@ -102,6 +95,13 @@ try {
 	process.exit(1);
 }
 
+const expected = new Set([
+	"package.json",
+	"README.md",
+	"LICENSE",
+	"schemas/contract-v1.json",
+	...sourceFiles("src"),
+]);
 const missing = [...expected].filter((path) => !actual.has(path)).sort();
 const unexpected = [...actual].filter((path) => !expected.has(path)).sort();
 const binary = JSON.parse(

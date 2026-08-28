@@ -78,9 +78,6 @@ jobs:
       - name: Build CLI entrypoint
         run: npm run build
 
-      - name: Verify generated JavaScript is committed
-        run: git diff --exit-code -- src/*.js
-
       - name: Check npm package contents
         if: matrix.node-version == '24.12.x' && matrix.pwsh-version == '7.6.0'
         run: npm run check:pack
