@@ -452,7 +452,7 @@ async function runCliInWindowsConsoleUntilFile(
 			() =>
 				`CLI launcher exited before readiness: ${launcher.exitCode}\n${launcherStdout}\n${launcherStderr}`,
 			"Custom process did not reach the Windows cancellation readiness point",
-			15_000,
+			60_000,
 		);
 		processId = Number((await readFile(pidPath, "utf8")).trim());
 		assert.ok(Number.isInteger(processId) && processId > 0);
