@@ -59,4 +59,3 @@ Trade-offs:
   security sandbox by itself;
 - the host must maintain adapters for runtimes whose launch behavior cannot be
   represented declaratively.
-

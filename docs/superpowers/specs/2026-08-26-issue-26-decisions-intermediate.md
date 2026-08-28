@@ -1,5 +1,7 @@
 # Issue #26: decisiones intermedias sobre extensibilidad
 
+<!-- markdownlint-disable MD029 -->
+
 > Checkpoint no normativo de la sesión de brainstorming. No es todavía la
 > nota final de diseño, no sustituye a la Issue #26 ni contiene un plan de
 > implementación.

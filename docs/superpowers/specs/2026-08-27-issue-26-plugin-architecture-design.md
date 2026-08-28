@@ -11,7 +11,7 @@ tags:
   - issue-26
 ---
 
-# Issue #26: arquitectura de extensiones
+Issue #26: arquitectura de extensiones
 
 > Diseño aprobado derivado de la Issue #26, `CONTEXT.md`, los ADR 0001, 0002,
 > 0003, 0004, 0006, 0007, 0008, 0009, 0010, 0011, 0013, 0014 y 0015, y el
@@ -23,8 +23,8 @@ Esta especificación define una arquitectura para añadir nuevos `Step types`,
 registrar y seleccionar runtimes y dejar una frontera evolutiva para futuros
 `Source providers` y extensiones de terceros.
 
-El diseño no implementa la arquitectura ni construye el prototipo de la Issue
-#26. El MVP actual permanece sin cambios. La primera validación, cuando se
+El diseño no implementa la arquitectura ni construye el prototipo de la Issue #26.
+El MVP actual permanece sin cambios. La primera validación, cuando se
 autorice una implementación, será un registro estático directo en el host.
 
 ## 1. Purpose & Scope
