@@ -449,10 +449,28 @@ type JsonStdioV1Response = {
 `content` es la proyección serializable y de solo lectura de `SourceContent`:
 `representation: "materialized"` exige un `root` que sea una proyección
 temporal creada por el host, mientras `representation: "virtual"` exige
-`entries` con rutas relativas seguras. No se mezclan ambas representaciones. El
-adaptador del runtime traduce la proyección al contrato lógico; no concede
-acceso a rutas ambientales. `state` es el estado previo en la petición y el
-nuevo estado que el executor devuelve explícitamente en la respuesta.
+`entries` con rutas relativas seguras. En la representación virtual, cada
+`entries[].path` debe ser una cadena no vacía en UTF-8 normalizado, usar `/` y
+no contener `NUL`, separadores inversos, segmentos vacíos, `.` o `..`. Se
+rechazan rutas absolutas, prefijos de unidad o URI y cualquier otra forma que
+escape del contenido relativo. El host normaliza cada ruta antes de detectar
+duplicados, y rechaza también colisiones entre un archivo y cualquiera de sus
+directorios prefijo, antes de materializar el contenido. No se mezclan ambas
+representaciones. El adaptador del runtime traduce la proyección al contrato
+lógico; no concede acceso a rutas ambientales.
+
+En la petición, `state` representa el estado anterior; si está ausente no hay
+estado previo. En la respuesta, `state` ausente significa conservar el estado
+anterior y `state: null` significa reemplazarlo explícitamente por JSON `null`.
+El host aplica esta matriz antes de persistir:
+
+| Operación y resultado | `state` ausente en respuesta | `state` presente en respuesta | Persistencia |
+| --- | --- | --- | --- |
+| `check`, cualquier resultado válido | conserva | ignora | nunca |
+| `install` con `status: "ok"` | conserva | reemplaza, incluso por `null` | solo si está presente |
+| `install` con `missing`, `drift` o `error` | conserva | ignora | nunca |
+| `uninstall`, cualquier resultado válido | conserva | ignora | nunca |
+| fallo de proceso, transporte, timeout o cancelación | conserva | no aplica | nunca |
 
 - una petición JSON por operación;
 - un resultado JSON por operación;
@@ -467,13 +485,16 @@ operación esperadas, valida todos los campos obligatorios y sus tipos, comprueb
 que `operation` coincide en petición y respuesta y rechaza protocolos,
 operaciones, estados o capacidades no válidos. Un mensaje es un único
 documento JSON; cualquier output adicional en stdout, JSON malformado o
-respuesta con campos de contrato desconocidos invalida la operación. Los
-campos `details`, `state` y `error.details` son valores opacos JSON; no se
-interpretan para conceder permisos. No se promete compatibilidad entre
-versiones de protocolo durante `0.x`; los cambios incompatibles requieren otro
-identificador de protocolo. El host solo persiste `state` cuando la operación y
-el resultado lo permiten, y normaliza los errores de transporte, timeout y
-cancelación aunque el proceso no alcance a devolver una respuesta.
+respuesta con campos de contrato desconocidos invalida la operación. El
+adaptador solo acepta el resultado si el proceso termina con exit code `0`;
+cualquier exit code distinto de cero es un fallo de proceso y tiene precedencia
+sobre un JSON válido, por lo que no persiste estado. Los campos `details`,
+`state` y `error.details` son valores opacos JSON; no se interpretan para
+conceder permisos. No se promete compatibilidad entre versiones de protocolo
+durante `0.x`; los cambios incompatibles requieren otro identificador de
+protocolo. El host aplica la matriz de persistencia anterior y normaliza los
+errores de transporte, timeout y cancelación aunque el proceso no alcance a
+devolver una respuesta.
 
 El runtime adapta comando, argumentos, entorno, transporte y lanzamiento. No
 adapta los estados lógicos del lifecycle.
@@ -484,14 +505,19 @@ Un futuro `Source provider` se registra por separado:
 
 ```ts
 type SourceProviderContext = {
-  grantedCapabilities: readonly Capability[]
-  deniedCapabilities: readonly Capability[]
-  grantedServices: {
-    network?: NetworkService
-    credentialsRead?: CredentialsReadService
-    state?: StateService
+  capabilities: {
+    granted: readonly Capability[]
+    denied: readonly Capability[]
+    networkRequest(request: JsonValue): Promise<JsonValue>
+    credentialsRead(key: string): Promise<JsonValue>
+    stateRead(key: string): Promise<JsonValue>
+    stateWrite(key: string, value: JsonValue): Promise<void>
   }
-  require(capability: Capability): void
+}
+
+type ProviderCancellation = {
+  signal: AbortSignal
+  deadline?: string
 }
 
 type SourceProviderDefinition = {
@@ -515,24 +541,31 @@ type SourceProviderDefinition = {
   resolveRevision(
     locator: SourceLocator,
     selector: SourceSelector | undefined,
-    context: SourceProviderContext
+    context: SourceProviderContext,
+    cancellation: ProviderCancellation
   ): Promise<SourceRevision>
 
   open(
     revision: SourceRevision,
-    context: SourceProviderContext
+    context: SourceProviderContext,
+    cancellation: ProviderCancellation
   ): Promise<SourceHandle>
 }
 ```
 
 El host evalúa la política y crea el `SourceProviderContext` antes de invocar al
-provider. Cada operación conserva ese contexto y el provider debe llamar a
-`require` antes de usar un servicio; por ejemplo, `network`, `credentials.read`
-o `state.write`. Una capacidad denegada no tiene servicio concedido y hace
-fallar la operación. El provider conserva la semántica específica de locator,
-selector, revisión, fingerprint y materialización, pero no obtiene red,
-credenciales o estado mediante acceso ambiental. El host conserva lifecycle,
-limpieza, rutas seguras, confianza, diagnósticos y uso por los Steps.
+provider. Los métodos del broker son la única frontera de servicio: cada llamada
+a `networkRequest`, `credentialsRead`, `stateRead` o `stateWrite` comprueba en
+el host la capacidad correspondiente y falla si no está concedida, aunque el
+provider intente omitir una comprobación previa. El provider no recibe los
+servicios subyacentes ni puede obtener red, credenciales o estado mediante
+acceso ambiental. `resolveRevision` y `open` reciben el `signal` y el
+`deadline` del host mediante `ProviderCancellation`; deben observar ambos,
+detener o asentarse pronto ante cancelación y no entregar resultados después
+de abortar. Si abren handles, deben cerrarlos también por la ruta de
+cancelación; `SourceHandle.close()` es idempotente y el host lo ejecuta en
+`finally`. El host conserva lifecycle, limpieza, rutas seguras, confianza,
+diagnósticos y uso por los Steps.
 
 ```ts
 type SourceHandle = {
@@ -544,12 +577,19 @@ type SourceHandle = {
 }
 ```
 
-La huella que el provider entrega es una propuesta no confiable. Antes de
-aceptar el `SourceHandle` y antes de usar esa huella en confianza, lockfile,
-deduplicación o caché, el host debe verificarla contra un digest que calcule
-del `SourceContent` materializado, o validar una atestación firmada que vincule
-identidad, revisión, contenido y clave de confianza. Si la verificación falla,
-el Source no se puede reutilizar ni autorizar con esa huella.
+La huella que el provider entrega es una propuesta no confiable. Para
+`SourceContent` virtual, el host calcula el digest de una representación
+canónica `source-content-v1`: registros ordenados lexicográficamente por los
+bytes UTF-8 de la ruta normalizada, con cada registro codificando con longitudes
+explícitas su tipo, ruta, metadata y bytes de contenido. Se incluyen directorios
+y archivos; la metadata mínima incluye el tipo y el tamaño en bytes, y no
+incluye timestamps ni rutas dependientes del host. El contenido declarado como
+`utf8` se convierte a bytes UTF-8 y el declarado como `base64` se decodifica
+antes del digest. El host verifica o recalcula esta huella antes de aceptar el
+`SourceHandle` y antes de usarla en confianza, lockfile, deduplicación o caché.
+Como alternativa, acepta una atestación firmada que vincule identidad,
+revisión, digest de esa representación y clave de confianza. Si la verificación
+falla, el Source no se puede reutilizar ni autorizar con esa huella.
 
 La identidad sigue siendo `provider + locator normalizado`; el selector no
 forma parte de la identidad y se resuelve como `Source revision`.
@@ -665,14 +705,17 @@ y `cache prune`.
 - **AC-006:** Dado un Step con comportamiento arbitrario, cuando no existe
   autorización para su huella concreta, entonces el host no lo ejecuta aunque
   su extensión o runtime estén registrados.
-- **AC-007:** Dado un executor que devuelve estado opaco, cuando termina
-  `install`, entonces el host persiste el estado con identidad de extensión y
-  huella del Step y solo lo entrega a un executor histórico exacto, o a uno
-  distinto que haya pasado schema, migración y compatibilidad del estado.
+- **AC-007:** Dado un executor que devuelve estado opaco, cuando termina con
+  éxito `install`, entonces el host persiste únicamente un `state` explícito
+  (incluido `null`) con identidad de extensión y huella del Step, y solo lo
+  entrega a un executor histórico exacto, o a uno distinto que haya pasado
+  schema, migración y compatibilidad del estado; `check`, `uninstall` y los
+  fallos no escriben un estado nuevo.
 - **AC-008:** Dado un `Source provider` futuro, cuando resuelve un selector,
   entonces devuelve identidad canónica, `Source revision`, huella candidata,
-  `SourceContent` de solo lectura y limpieza explícita, y el host verifica la
-  huella antes de usarla como clave.
+  `SourceContent` de solo lectura y limpieza explícita, las rutas virtuales
+  cumplen la gramática segura y el host verifica la huella canónica antes de
+  usarla como clave.
 - **AC-009:** Dado un manifiesto de extensión futuro, cuando su API o política
   no es compatible, entonces el host lo rechaza antes de activar su código.
 - **AC-010:** Dado que tbboot sigue por debajo de `1.0`, cuando se introducen
@@ -684,12 +727,15 @@ y `cache prune`.
 - **AC-012:** Dado que no queda una pregunta técnica bloqueante, cuando se
   cierra el diseño, entonces no se construye el prototipo de #26.
 - **AC-013:** Dado un `Source provider` que necesita red, credenciales o estado,
-  cuando el host lo invoca, entonces recibe un contexto explícito y no puede
-  usar una capacidad denegada ni acceso ambiental.
+  cuando el host lo invoca, entonces recibe un contexto explícito cuyos métodos
+  de broker comprueban la capacidad en cada llamada, no puede usar una
+  capacidad denegada ni acceso ambiental, y `resolveRevision`/`open` observan
+  la cancelación y el deadline del host.
 - **AC-014:** Dado un Step out-of-process, cuando el runtime intercambia su
   petición y respuesta, entonces usa `json-stdio-v1`, el host valida ambos
-  payloads y mantiene bajo su control lifecycle, timeout, cancelación y
-  errores de transporte.
+  payloads, exige exit code `0`, aplica la matriz explícita de `state` y
+  mantiene bajo su control lifecycle, timeout, cancelación y errores de
+  transporte.
 
 ## 6. Test Automation Strategy
 
@@ -871,11 +917,13 @@ uninstall histórico producido por la huella anterior.
 ### Source provider remoto
 
 Un provider remoto puede requerir `network`, `credentials.read` y `state.write`.
-Esas capacidades se evalúan antes de abrir el Source y se entregan mediante el
-`SourceProviderContext`; el provider no las obtiene de forma ambiental. El
-provider devuelve la identidad canónica, resuelve la revisión y entrega
-`SourceContent` de solo lectura. El host verifica la huella antes de reutilizar
-el Source y libera el `SourceHandle` también cuando la operación se cancela.
+Esas capacidades se evalúan antes de abrir el Source y se exponen mediante los
+métodos del broker de `SourceProviderContext`, que las vuelven a comprobar en
+cada llamada; el provider no las obtiene de forma ambiental. El provider
+devuelve la identidad canónica, resuelve la revisión y entrega `SourceContent`
+de solo lectura observando el `signal` y `deadline` del host. El host verifica
+la huella antes de reutilizar el Source y libera el `SourceHandle` también
+cuando la operación se cancela.
 
 ### Casos de optionalidad
 
@@ -902,9 +950,13 @@ condiciones:
 - la selección de runtime es determinista y diagnóstica;
 - in-process y out-of-process tienen reglas explícitas de confianza;
 - la autorización de `Custom` y futuros tipos arbitrarios es por instancia;
-- el estado opaco y la recuperación histórica exacta o migrada están definidos;
+- el estado opaco, su matriz de persistencia y la recuperación histórica exacta
+  o migrada están definidos;
 - `schemaVersion: 1` y la falta de compatibilidad pre-`1.0` están explícitas;
-- `Source provider`, `SourceHandle` y `SourceContent` tienen frontera clara;
+- `Source provider`, `SourceHandle` y `SourceContent` tienen frontera clara,
+  gramática de rutas y huella canónica verificable;
+- el broker de capacidades aplica la política en cada llamada y la cancelación
+  alcanza las operaciones de resolución, apertura y cleanup;
 - la activación futura de extensiones es explícita y previa a la ejecución;
 - el prototipo queda diferido y condicionado a una pregunta técnica real;
 - no se requieren cambios en `src/`, `schemas/` ni en la implementación
