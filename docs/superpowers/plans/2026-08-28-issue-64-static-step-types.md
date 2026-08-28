@@ -28,12 +28,12 @@
 
 **Interfaces:**
 
-- `JsonValue): JSON-compatible state/details value.
-- `StepResult):`status`,`changed`, optional`message`,`details`, and`state`.
-- `StepExecutionContext): parsed Recipe, concrete Step, execution mode, explicit host services/capabilities, and cancellation signal.
-- `StepExecutor): optional`check`,`install`, and`uninstall` functions receiving the context and previous state.
-- `StepTypeDefinition):`id`,`apiVersion`, extension identity, JSON Schema, optional semantic validator, behavior, capabilities, execution descriptors, and`createExecutor(step, context)`.
-- `StepTypeRegistry.register(definition)` and `get(typeId)`.
+- `JsonValue`: JSON-compatible state/details value.
+- `StepResult`: `status`, `changed`, optional `message`, `details`, and `state`.
+- `StepExecutionContext`: parsed Recipe, concrete Step, execution mode, explicit host services/capabilities, and cancellation signal.
+- `StepExecutor`: optional `check`, `install`, and `uninstall` functions receiving the context and previous state.
+- `StepTypeDefinition`: `id`, `apiVersion`, extension identity, JSON Schema, optional semantic validator, behavior, capabilities, execution descriptors, and `createExecutor(step, context)`.
+- `StepTypeRegistry`: `register(definition)` and `get(typeId)`.
 - `createBuiltinStepTypeRegistry()` returns a registry containing the built-in IDs through the same registration path; its executor adapters remain supplied by the host integration.
 
 - [x] **Step 1: Write the failing tests**

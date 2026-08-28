@@ -212,14 +212,30 @@ function diagnostic(
 	};
 }
 
+export function sourceReferenceKey(
+	consumerRoot: string,
+	source: SourceReference,
+): string {
+	return source.provider === "local"
+		? `local:${resolve(consumerRoot, source.locator.path)}`
+		: `git:${normalizeGitRepository(consumerRoot, source.locator.repository)}|${normalizeGitPath(source.locator.path) ?? ""}`;
+}
+
 function extensionStateKey(
+	consumerRoot: string,
 	source: SourceReference,
 	recipe: string,
 	step: number,
 	type: string,
 	extension: StepTypeDefinition["extension"],
 ): string {
-	return JSON.stringify([source, recipe, step, type, extension]);
+	return JSON.stringify([
+		sourceReferenceKey(consumerRoot, source),
+		recipe,
+		step,
+		type,
+		extension,
+	]);
 }
 
 async function readExtensionStates(
@@ -257,6 +273,7 @@ async function readExtensionStates(
 			return [
 				[
 					extensionStateKey(
+						root,
 						effect.source,
 						effect.recipe,
 						effect.step,
@@ -2088,8 +2105,9 @@ export async function runDoctor(
 		persistTrust: false,
 	});
 	delete built.envelope.consumerRoot;
+	const consumerRoot = built.consumerRoot ?? resolve(root);
 	const extensionStates = await readExtensionStates(
-		built.consumerRoot ?? resolve(root),
+		consumerRoot,
 		built.envelope.diagnostics,
 	);
 	try {
@@ -2118,6 +2136,7 @@ export async function runDoctor(
 							descriptor.context,
 							extensionStates.get(
 								extensionStateKey(
+									consumerRoot,
 									descriptor.sourceReference,
 									descriptor.recipe,
 									descriptor.step,

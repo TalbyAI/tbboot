@@ -35,12 +35,9 @@ import {
 	type PlannedStep,
 	planLocalInstall,
 	scanManagedBlock,
+	sourceReferenceKey,
 } from "./doctor.ts";
-import {
-	materializeGitSource,
-	normalizeGitPath,
-	normalizeGitRepository,
-} from "./git.ts";
+import { materializeGitSource } from "./git.ts";
 import {
 	errorMessage,
 	finish,
@@ -169,12 +166,8 @@ function stateKey(
 		stepType?: string;
 	},
 ): string {
-	const source =
-		effect.source.provider === "local"
-			? `local:${resolve(consumerRoot, effect.source.locator.path)}`
-			: `git:${normalizeGitRepository(consumerRoot, effect.source.locator.repository)}|${normalizeGitPath(effect.source.locator.path) ?? ""}`;
 	return JSON.stringify([
-		source,
+		sourceReferenceKey(consumerRoot, effect.source),
 		effect.recipe,
 		effect.step,
 		effect.type === "extension" ? effect.stepType : effect.type,
@@ -538,7 +531,21 @@ async function applyInstallPlan(
 				}),
 			) as Extract<StateEffect, { type: "extension" }> | undefined;
 			let previousState = existing?.state;
-			let installation: StepResult | undefined;
+			let includeState =
+				existing !== undefined && Object.hasOwn(existing, "state");
+			const persistEffect = async (): Promise<void> => {
+				const effect = extensionEffect(registered, previousState, includeState);
+				const key = stateKey(plan.consumerRoot, effect);
+				const current = effects.get(key);
+				if (sameEffect(current, effect)) return;
+				const sequenced = { ...effect, sequence: sequence++ };
+				effects.set(key, sequenced);
+				envelope.changed =
+					(await persistState(plan.consumerRoot, {
+						schemaVersion: 1,
+						effects: [...effects.values()],
+					})) || envelope.changed;
+			};
 			const report = (result: StepResult): boolean => {
 				action.state = result.status;
 				if (result.status === "ok") return false;
@@ -555,33 +562,21 @@ async function applyInstallPlan(
 			};
 			try {
 				if (registered.executor.install !== undefined) {
-					installation = await registered.executor.install(
+					const installation = await registered.executor.install(
 						registered.context,
 						previousState,
 					);
 					throwIfCancelled(options.signal);
 					if (installation.changed) envelope.changed = true;
-					if (Object.hasOwn(installation, "state"))
+					if (Object.hasOwn(installation, "state")) {
 						previousState = installation.state;
+						includeState = true;
+					}
 					if (installation.status !== "ok") {
 						stopped ||= report(installation);
 						continue;
 					}
-					const effect = extensionEffect(
-						registered,
-						previousState,
-						Object.hasOwn(installation, "state") ||
-							(existing !== undefined && Object.hasOwn(existing, "state")),
-					);
-					if (!sameEffect(existing, effect)) {
-						const sequenced = { ...effect, sequence: sequence++ };
-						effects.set(stateKey(plan.consumerRoot, effect), sequenced);
-						envelope.changed =
-							(await persistState(plan.consumerRoot, {
-								schemaVersion: 1,
-								effects: [...effects.values()],
-							})) || envelope.changed;
-					}
+					await persistEffect();
 				}
 				if (registered.executor.check === undefined) {
 					action.state = "ok";
@@ -597,6 +592,11 @@ async function applyInstallPlan(
 					stopped ||= report(check);
 					continue;
 				}
+				if (Object.hasOwn(check, "state")) {
+					previousState = check.state;
+					includeState = true;
+				}
+				await persistEffect();
 				action.state = "ok";
 			} catch (error) {
 				if (isCancellation(error)) {
@@ -1121,7 +1121,9 @@ async function historicalExtension(
 				`Historical Step type ${effect.stepType} is not registered`,
 			);
 		if (
-			JSON.stringify(definition.extension) !== JSON.stringify(effect.extension)
+			definition.extension.id !== effect.extension.id ||
+			definition.extension.version !== effect.extension.version ||
+			definition.extension.fingerprint !== effect.extension.fingerprint
 		)
 			return unavailable(
 				`Historical Step type ${effect.stepType} extension identity does not match`,

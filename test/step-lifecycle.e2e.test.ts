@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import { runDoctor } from "../src/doctor.ts";
 import { runInstall, runUninstall } from "../src/install.ts";
 import {
@@ -155,10 +155,89 @@ test("doctor passes persisted registered Step state to a later check", async () 
 			force: false,
 		});
 		assert.equal(install.exitCode, 0);
+		await writeFile(
+			join(fixture.root, "consumer", "tbboot.yaml"),
+			"schemaVersion: 1\nsources:\n  - provider: local\n    locator:\n      path: ../source/\n",
+		);
 
 		const doctor = await runDoctor(join(fixture.root, "consumer"));
 		assert.equal(doctor.exitCode, 0);
 		assert.deepEqual(checkedStates, [{ installed: true }, { installed: true }]);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("persists state returned by a check-only Step", async () => {
+	const type = "team.test.check-only-state";
+	registerStepType(
+		definition(type, () => ({
+			check: async () => ({
+				status: "ok",
+				changed: false,
+				state: { checked: true },
+			}),
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+		const state = parse(
+			await readFile(
+				join(fixture.root, "consumer", ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ state?: unknown }> };
+		assert.deepEqual(
+			state.effects.map((effect) => effect.state),
+			[{ checked: true }],
+		);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("persists newer state returned by a Step check", async () => {
+	const type = "team.test.check-state-update";
+	registerStepType(
+		definition(type, () => ({
+			install: async () => ({
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			}),
+			check: async () => ({
+				status: "ok",
+				changed: false,
+				state: { checked: true },
+			}),
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+		const state = parse(
+			await readFile(
+				join(fixture.root, "consumer", ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as { effects: Array<{ state?: unknown }> };
+		assert.deepEqual(
+			state.effects.map((effect) => effect.state),
+			[{ checked: true }],
+		);
 	} finally {
 		await fixture.cleanup();
 	}
@@ -193,6 +272,65 @@ test("doctor does not pass state from a different extension identity", async () 
 		const doctor = await runDoctor(join(fixture.root, "consumer"));
 		assert.equal(doctor.exitCode, 0);
 		assert.deepEqual(checkedStates, [{ installed: true }, undefined]);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("uninstall matches persisted extension identity fields regardless of order", async () => {
+	const type = "team.test.reordered-extension-identity";
+	const uninstalledStates: unknown[] = [];
+	registerStepType(
+		definition(type, () => ({
+			install: async () => ({
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			}),
+			check: async () => ({ status: "ok", changed: false }),
+			uninstall: async (_context, state) => {
+				uninstalledStates.push(state);
+				return { status: "ok", changed: true };
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+		const state = parse(
+			await readFile(
+				join(fixture.root, "consumer", ".tbboot", "state.yaml"),
+				"utf8",
+			),
+		) as {
+			effects: Array<{
+				extension: { id: string; version: string };
+				state: unknown;
+			}>;
+		};
+		const effect = state.effects[0];
+		assert.ok(effect);
+		state.effects[0] = {
+			...effect,
+			extension: {
+				version: effect.extension.version,
+				id: effect.extension.id,
+			},
+		};
+		await writeFile(
+			join(fixture.root, "consumer", ".tbboot", "state.yaml"),
+			stringify(state),
+		);
+
+		const uninstall = await runUninstall(join(fixture.root, "consumer"), {});
+		assert.equal(uninstall.exitCode, 0);
+		assert.deepEqual(uninstalledStates, [{ installed: true }]);
 	} finally {
 		await fixture.cleanup();
 	}
