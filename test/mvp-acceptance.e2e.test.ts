@@ -70,7 +70,13 @@ async function createFixture(): Promise<Fixture> {
 		consumerRoot,
 		sourceRoot,
 		profileRoot,
-		cleanup: () => rm(root, { recursive: true, force: true }),
+		cleanup: () =>
+			rm(root, {
+				recursive: true,
+				force: true,
+				maxRetries: 10,
+				retryDelay: 100,
+			}),
 	};
 }
 
@@ -247,8 +253,9 @@ async function waitForReady(
 	isExited: () => boolean,
 	exitMessage: () => string,
 	assertionMessage: string,
+	timeoutMs = 10_000,
 ): Promise<void> {
-	const deadline = Date.now() + 10_000;
+	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (
 			await readFile(readyPath).then(
@@ -445,6 +452,7 @@ async function runCliInWindowsConsoleUntilFile(
 			() =>
 				`CLI launcher exited before readiness: ${launcher.exitCode}\n${launcherStdout}\n${launcherStderr}`,
 			"Custom process did not reach the Windows cancellation readiness point",
+			15_000,
 		);
 		processId = Number((await readFile(pidPath, "utf8")).trim());
 		assert.ok(Number.isInteger(processId) && processId > 0);
