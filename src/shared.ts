@@ -35,6 +35,11 @@ export function isNotFound(error: unknown): boolean {
 	return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
 }
 
+export function throwIfCancelled(signal: AbortSignal | undefined): void {
+	if (signal?.aborted)
+		throw Object.assign(new Error("cancelled"), { code: "cancelled" });
+}
+
 export function isInside(root: string, candidate: string): boolean {
 	const child = relative(root, candidate);
 	return (

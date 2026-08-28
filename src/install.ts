@@ -47,6 +47,7 @@ import {
 	isInside,
 	isNotFound,
 	normalizeNewlines,
+	throwIfCancelled,
 } from "./shared.ts";
 import type { JsonValue, StepResult } from "./steps.ts";
 import {
@@ -558,6 +559,7 @@ async function applyInstallPlan(
 						registered.context,
 						previousState,
 					);
+					throwIfCancelled(options.signal);
 					if (installation.changed) envelope.changed = true;
 					if (Object.hasOwn(installation, "state"))
 						previousState = installation.state;
@@ -589,6 +591,7 @@ async function applyInstallPlan(
 					registered.context,
 					previousState,
 				);
+				throwIfCancelled(options.signal);
 				if (check.changed) envelope.changed = true;
 				if (check.status !== "ok") {
 					stopped ||= report(check);
@@ -1470,6 +1473,7 @@ async function applyUninstallState(
 					extension.context.cancellation.signal =
 						options.signal ?? extension.context.cancellation.signal;
 					const outcome = await operation(extension.context, extension.state);
+					throwIfCancelled(options.signal);
 					if (outcome.changed) envelope.changed = true;
 					if (outcome.status !== "ok") {
 						record.action.state = outcome.status;

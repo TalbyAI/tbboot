@@ -5,6 +5,7 @@ import type {
 	CustomStep,
 	Diagnostic,
 	DocumentKind,
+	ExtensionStateEffect,
 	FileStep,
 	LockEntry,
 	LockfileDocument,
@@ -40,8 +41,10 @@ import {
 	isInside,
 	isNotFound,
 	normalizeNewlines,
+	throwIfCancelled,
 } from "./shared.ts";
 import {
+	type JsonValue,
 	type StepExecutionContext,
 	type StepExecutor,
 	type StepTypeDefinition,
@@ -207,6 +210,64 @@ function diagnostic(
 		...(context.recipe === undefined ? {} : { recipe: context.recipe }),
 		...(context.step === undefined ? {} : { step: context.step }),
 	};
+}
+
+function extensionStateKey(
+	source: SourceReference,
+	recipe: string,
+	step: number,
+	type: string,
+	extension: StepTypeDefinition["extension"],
+): string {
+	return JSON.stringify([source, recipe, step, type, extension]);
+}
+
+async function readExtensionStates(
+	root: string,
+	diagnostics: Diagnostic[],
+): Promise<Map<string, JsonValue | undefined>> {
+	const path = join(root, ".tbboot", "state.yaml");
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		if (isNotFound(error)) return new Map();
+		diagnostics.push(
+			diagnostic(
+				"state-read",
+				`Unable to read ${path}: ${errorMessage(error)}`,
+			),
+		);
+		return new Map();
+	}
+	const result = validateDocument<"state">({
+		kind: "state",
+		text,
+		document: ".tbboot/state.yaml",
+	});
+	diagnostics.push(...result.diagnostics);
+	if (result.value === undefined) return new Map();
+	return new Map(
+		result.value.effects.flatMap((effect) => {
+			if (
+				effect.type !== "extension" ||
+				!Object.hasOwn(effect as ExtensionStateEffect, "state")
+			)
+				return [];
+			return [
+				[
+					extensionStateKey(
+						effect.source,
+						effect.recipe,
+						effect.step,
+						effect.stepType,
+						effect.extension,
+					),
+					effect.state,
+				] as const,
+			];
+		}),
+	);
 }
 
 async function realPathWithMissing(candidate: string): Promise<string> {
@@ -2027,6 +2088,10 @@ export async function runDoctor(
 		persistTrust: false,
 	});
 	delete built.envelope.consumerRoot;
+	const extensionStates = await readExtensionStates(
+		built.consumerRoot ?? resolve(root),
+		built.envelope.diagnostics,
+	);
 	try {
 		let stderr = "";
 		let cancelled = options.signal?.aborted ?? false;
@@ -2049,7 +2114,19 @@ export async function runDoctor(
 					descriptor.context.cancellation.signal =
 						options.signal ?? descriptor.context.cancellation.signal;
 					try {
-						const outcome = await check(descriptor.context);
+						const outcome = await check(
+							descriptor.context,
+							extensionStates.get(
+								extensionStateKey(
+									descriptor.sourceReference,
+									descriptor.recipe,
+									descriptor.step,
+									descriptor.type,
+									descriptor.definition.extension,
+								),
+							),
+						);
+						throwIfCancelled(options.signal);
 						descriptor.action.state = outcome.status;
 						if (outcome.status !== "ok") {
 							built.envelope.diagnostics.push(

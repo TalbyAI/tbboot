@@ -58,6 +58,15 @@ function definition(
 	};
 }
 
+function abortAfterAwait(controller: AbortController): Promise<void> {
+	return new Promise((resolve) => {
+		setImmediate(() => {
+			controller.abort();
+			resolve();
+		});
+	});
+}
+
 test("the host creates and executes one registered Step executor per instance", async () => {
 	const type = "team.test.lifecycle";
 	let created = 0;
@@ -116,6 +125,74 @@ test("the host creates and executes one registered Step executor per instance", 
 		assert.equal(uninstall.envelope.actions[0]?.state, "removed");
 		assert.equal(uninstall.envelope.changed, true);
 		assert.equal(created, 3);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("doctor passes persisted registered Step state to a later check", async () => {
+	const type = "team.test.doctor-state";
+	const checkedStates: unknown[] = [];
+	registerStepType(
+		definition(type, () => ({
+			install: async () => ({
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			}),
+			check: async (_context, state) => {
+				checkedStates.push(state);
+				return { status: "ok", changed: false };
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+
+		const doctor = await runDoctor(join(fixture.root, "consumer"));
+		assert.equal(doctor.exitCode, 0);
+		assert.deepEqual(checkedStates, [{ installed: true }, { installed: true }]);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("doctor does not pass state from a different extension identity", async () => {
+	const type = "team.test.doctor-extension-identity";
+	const checkedStates: unknown[] = [];
+	const registered = definition(type, () => ({
+		install: async () => ({
+			status: "ok",
+			changed: true,
+			state: { installed: true },
+		}),
+		check: async (_context, state) => {
+			checkedStates.push(state);
+			return { status: "ok", changed: false };
+		},
+	}));
+	registerStepType(registered);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+
+		registered.extension = { id: "team.tbboot.tests", version: "2.0.0" };
+		const doctor = await runDoctor(join(fixture.root, "consumer"));
+		assert.equal(doctor.exitCode, 0);
+		assert.deepEqual(checkedStates, [{ installed: true }, undefined]);
 	} finally {
 		await fixture.cleanup();
 	}
@@ -234,6 +311,98 @@ test("reports Step cancellation during registered uninstall with exit code 130",
 		const uninstall = await runUninstall(join(fixture.root, "consumer"), {});
 		assert.equal(uninstall.exitCode, 130);
 		assert.equal(uninstall.envelope.diagnostics[0]?.code, "step-cancelled");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("reports cancellation when a registered doctor check returns after abort", async () => {
+	const type = "team.test.cancelled-doctor";
+	const controller = new AbortController();
+	registerStepType(
+		definition(type, () => ({
+			check: async () => {
+				await abortAfterAwait(controller);
+				return { status: "ok", changed: false };
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const result = await runDoctor(join(fixture.root, "consumer"), {
+			signal: controller.signal,
+		});
+		assert.equal(result.exitCode, 130);
+		assert.equal(result.envelope.diagnostics[0]?.code, "step-cancelled");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("reports cancellation when a registered install returns after abort", async () => {
+	const type = "team.test.cancelled-install";
+	const controller = new AbortController();
+	registerStepType(
+		definition(type, () => ({
+			install: async () => {
+				await abortAfterAwait(controller);
+				return {
+					status: "ok",
+					changed: true,
+					state: { installed: true },
+				};
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const result = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+			signal: controller.signal,
+		});
+		assert.equal(result.exitCode, 130);
+		assert.equal(result.envelope.diagnostics[0]?.code, "step-cancelled");
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("reports cancellation when a registered uninstall returns after abort", async () => {
+	const type = "team.test.cancelled-uninstall-return";
+	const controller = new AbortController();
+	registerStepType(
+		definition(type, () => ({
+			install: async () => ({
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			}),
+			uninstall: async () => {
+				await abortAfterAwait(controller);
+				return { status: "ok", changed: true };
+			},
+		})),
+	);
+	const fixture = await createFixture(
+		`  - type: ${type}\n    value: maintained\n`,
+	);
+	try {
+		const install = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(install.exitCode, 0);
+
+		const result = await runUninstall(join(fixture.root, "consumer"), {
+			signal: controller.signal,
+		});
+		assert.equal(result.exitCode, 130);
+		assert.equal(result.envelope.diagnostics[0]?.code, "step-cancelled");
 	} finally {
 		await fixture.cleanup();
 	}
