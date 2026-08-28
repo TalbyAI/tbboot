@@ -2,8 +2,10 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type {
+	CustomStep,
 	Diagnostic,
 	DocumentKind,
+	FileStep,
 	LockEntry,
 	LockfileDocument,
 	ManifestDocument,
@@ -13,7 +15,7 @@ import type {
 	SourceReference,
 	Step,
 } from "./contract.ts";
-import { validateDocument } from "./contract.ts";
+import { validateDocument, validateStep } from "./contract.ts";
 import {
 	type CustomAuthorizationOptions,
 	sourceFingerprint as calculateSourceFingerprint,
@@ -39,6 +41,12 @@ import {
 	isNotFound,
 	normalizeNewlines,
 } from "./shared.ts";
+import {
+	type StepExecutionContext,
+	type StepExecutor,
+	type StepTypeDefinition,
+	stepTypeRegistry,
+} from "./steps.ts";
 
 type SupportedDocumentKind = Extract<
 	DocumentKind,
@@ -48,7 +56,7 @@ type DiagnosticContext = Pick<
 	Diagnostic,
 	"document" | "path" | "source" | "recipe" | "step"
 >;
-export type ArtifactType = Exclude<Step["type"], "custom">;
+export type ArtifactType = "file" | "file-fragment";
 export type ArtifactState = "satisfied" | "missing" | "drift" | "conflict";
 export type ActionState =
 	| ArtifactState
@@ -98,12 +106,28 @@ export type PlannedCustomStep = {
 	action: ArtifactAction;
 };
 
+export type PlannedStep = {
+	source: SourceReference;
+	sourceRoot: string;
+	revision?: string;
+	sourceFingerprint: string;
+	recipe: string;
+	step: number;
+	type: string;
+	optional: boolean;
+	definition: StepTypeDefinition;
+	executor: StepExecutor;
+	context: StepExecutionContext;
+	action: ArtifactAction;
+};
+
 export type LocalInstallPlan = {
 	consumerRoot: string;
 	actions: ArtifactAction[];
 	diagnostics: Diagnostic[];
 	artifacts: PlannedArtifact[];
 	customSteps: PlannedCustomStep[];
+	registeredSteps: PlannedStep[];
 	lockfile?: LockfileDocument;
 	lockfileChanged: boolean;
 	cleanup?: () => Promise<void>;
@@ -138,6 +162,10 @@ type StepDescriptor = {
 	recipe: string;
 	step: number;
 	type: Step["type"];
+	definition: StepTypeDefinition;
+	executor: StepExecutor;
+	context: StepExecutionContext;
+	sourceFingerprint?: string;
 	input?: string;
 	target?: string;
 	optional: boolean;
@@ -278,6 +306,21 @@ function customAction(
 		recipe: descriptor.recipe,
 		step: descriptor.step,
 		type: "custom",
+		state: "deferred",
+	};
+}
+
+function registeredAction(descriptor: {
+	source: string;
+	recipe: string;
+	step: number;
+	type: string;
+}): ArtifactAction {
+	return {
+		source: descriptor.source,
+		recipe: descriptor.recipe,
+		step: descriptor.step,
+		type: descriptor.type,
 		state: "deferred",
 	};
 }
@@ -438,7 +481,68 @@ async function collectSourceSteps(
 		const recipeDocument: RecipeDocument = recipeResult.value;
 		for (const [index, step] of recipeDocument.steps.entries()) {
 			const stepNumber = index + 1;
+			const definition = stepTypeRegistry.get(step.type);
+			if (definition === undefined) {
+				envelope.diagnostics.push(
+					diagnostic(
+						"step-type-unknown",
+						`Step type ${step.type} is not registered`,
+						{
+							document: documentPaths.recipe,
+							path: `/steps/${index}/type`,
+							source: sourceRoot,
+							recipe,
+							step: stepNumber,
+						},
+						step.optional === true ? "warning" : "error",
+					),
+				);
+				continue;
+			}
+			const validationDiagnostics = validateStep(step, definition, {
+				document: documentPaths.recipe,
+				source: sourceRoot,
+				recipe,
+				step: stepNumber,
+			});
+			envelope.diagnostics.push(...validationDiagnostics);
+			if (validationDiagnostics.some(({ severity }) => severity === "error"))
+				continue;
+			const context: StepExecutionContext = {
+				recipe: recipeDocument,
+				step,
+				source: {
+					identity: JSON.stringify(sourceReference),
+					revision: metadata.revision,
+					fingerprint: metadata.sourceFingerprint,
+				},
+				mode: "in-process",
+				services: {},
+				capabilities: definition.capabilities,
+				cancellation: { signal: new AbortController().signal },
+			};
+			let executor: StepExecutor;
+			try {
+				executor = definition.createExecutor(step, context);
+			} catch (error) {
+				envelope.diagnostics.push(
+					diagnostic(
+						"step-executor-create-failed",
+						errorMessage(error),
+						{
+							document: documentPaths.recipe,
+							path: `/steps/${index}`,
+							source: sourceRoot,
+							recipe,
+							step: stepNumber,
+						},
+						step.optional === true ? "warning" : "error",
+					),
+				);
+				continue;
+			}
 			if (step.type === "custom") {
+				const customStep = step as CustomStep;
 				const descriptor: StepDescriptor = {
 					sourceReference,
 					source: sourceRoot,
@@ -447,6 +551,9 @@ async function collectSourceSteps(
 					recipe,
 					step: stepNumber,
 					type: "custom",
+					definition,
+					executor,
+					context,
 					optional: step.optional === true,
 					recipeRoot: join(sourceRoot, recipe),
 					action: customAction({
@@ -455,7 +562,10 @@ async function collectSourceSteps(
 						step: stepNumber,
 					}),
 				};
-				if (metadata.mode === "uninstall" && step.uninstall === undefined) {
+				if (
+					metadata.mode === "uninstall" &&
+					customStep.uninstall === undefined
+				) {
 					descriptor.uninstallUnsupported = true;
 					descriptors.push(descriptor);
 					continue;
@@ -466,7 +576,7 @@ async function collectSourceSteps(
 						metadata.revision ??
 						(await calculateSourceFingerprint(sourceRoot));
 					descriptor.preparedCustom = await prepareCustomStep(
-						step,
+						customStep,
 						{
 							consumerRoot: envelope.consumerRoot as string,
 							sourceRoot,
@@ -513,6 +623,41 @@ async function collectSourceSteps(
 				descriptors.push(descriptor);
 				continue;
 			}
+			if (step.type !== "file" && step.type !== "file-fragment") {
+				const sourceFingerprint =
+					metadata.sourceFingerprint ??
+					metadata.revision ??
+					(await calculateSourceFingerprint(sourceRoot));
+				context.source = {
+					...context.source,
+					identity: context.source?.identity ?? JSON.stringify(sourceReference),
+					fingerprint: sourceFingerprint,
+				};
+				descriptors.push({
+					sourceReference,
+					source: sourceRoot,
+					sourceLabel: sourceLabel(sourceReference, sourceRoot),
+					revision: metadata.revision,
+					sourceFingerprint,
+					recipe,
+					step: stepNumber,
+					type: step.type,
+					definition,
+					executor,
+					context,
+					optional: step.optional === true,
+					recipeRoot: join(sourceRoot, recipe),
+					action: registeredAction({
+						source: sourceDisplay(sourceReference, sourceRoot),
+						recipe,
+						step: stepNumber,
+						type: step.type,
+					}),
+				});
+				continue;
+			}
+
+			const fileStep = step as FileStep;
 
 			const descriptor: StepDescriptor = {
 				sourceReference,
@@ -521,29 +666,32 @@ async function collectSourceSteps(
 				revision: metadata.revision,
 				recipe,
 				step: stepNumber,
-				type: step.type,
-				input: step.input,
-				target: step.target,
+				type: fileStep.type,
+				definition,
+				executor,
+				context,
+				input: fileStep.input,
+				target: fileStep.target,
 				optional: step.optional === true,
 				recipeRoot: join(sourceRoot, recipe),
 				action: artifactAction({
 					source: sourceDisplay(sourceReference, sourceRoot),
 					recipe,
 					step: stepNumber,
-					type: step.type,
-					target: step.target,
+					type: fileStep.type,
+					target: fileStep.target,
 				}),
 			};
 			descriptor.inputPath = await resolveContained(
 				sourceRoot,
 				descriptor.recipeRoot,
-				step.input,
+				fileStep.input,
 			);
 			const consumerRoot = envelope.consumerRoot as string;
 			descriptor.targetPath = await resolveContained(
 				consumerRoot,
 				consumerRoot,
-				step.target,
+				fileStep.target,
 			);
 			descriptors.push(descriptor);
 		}
@@ -766,7 +914,8 @@ async function evaluateDescriptor(
 	force: boolean,
 ): Promise<void> {
 	if (descriptor.collision) return;
-	if (descriptor.type === "custom" || mode === "uninstall") return;
+	if (descriptor.type !== "file" && descriptor.type !== "file-fragment") return;
+	if (mode === "uninstall") return;
 
 	if (isPathEscape(descriptor.inputPath)) {
 		addStepDiagnostic(
@@ -1779,7 +1928,7 @@ export async function planLocalInstall(
 				revision: descriptor.revision,
 				recipe: descriptor.recipe,
 				step: descriptor.step,
-				type: descriptor.type,
+				type: descriptor.type as ArtifactType,
 				marker: descriptor.marker,
 				input,
 				targetPath,
@@ -1812,6 +1961,30 @@ export async function planLocalInstall(
 			},
 		];
 	});
+	const registeredSteps = built.descriptors.flatMap((descriptor) => {
+		if (
+			descriptor.type === "file" ||
+			descriptor.type === "file-fragment" ||
+			descriptor.type === "custom"
+		)
+			return [];
+		return [
+			{
+				source: descriptor.sourceReference,
+				sourceRoot: descriptor.source,
+				revision: descriptor.revision,
+				sourceFingerprint: descriptor.sourceFingerprint as string,
+				recipe: descriptor.recipe,
+				step: descriptor.step,
+				type: descriptor.type,
+				optional: descriptor.optional,
+				definition: descriptor.definition,
+				executor: descriptor.executor,
+				context: descriptor.context,
+				action: descriptor.action,
+			},
+		];
+	});
 	delete built.envelope.consumerRoot;
 	return {
 		consumerRoot: built.consumerRoot ?? resolve(root),
@@ -1819,6 +1992,7 @@ export async function planLocalInstall(
 		diagnostics: built.envelope.diagnostics,
 		artifacts,
 		customSteps,
+		registeredSteps,
 		lockfile: built.lockfile,
 		lockfileChanged: built.lockfileChanged,
 		cleanup: built.cleanup,
@@ -1864,6 +2038,62 @@ export async function runDoctor(
 				if (options.signal?.aborted) {
 					cancelled = true;
 					break;
+				}
+				if (
+					descriptor.type !== "custom" &&
+					descriptor.type !== "file" &&
+					descriptor.type !== "file-fragment"
+				) {
+					const check = descriptor.executor.check;
+					if (check === undefined) continue;
+					descriptor.context.cancellation.signal =
+						options.signal ?? descriptor.context.cancellation.signal;
+					try {
+						const outcome = await check(descriptor.context);
+						descriptor.action.state = outcome.status;
+						if (outcome.status !== "ok") {
+							built.envelope.diagnostics.push(
+								diagnostic(
+									`step-${outcome.status}`,
+									outcome.message ?? `Step check returned ${outcome.status}`,
+									{
+										source: descriptor.source,
+										recipe: descriptor.recipe,
+										step: descriptor.step,
+									},
+									descriptor.optional ? "warning" : "error",
+								),
+							);
+							if (!descriptor.optional) break;
+						}
+					} catch (error) {
+						if (isCancellation(error)) {
+							cancelled = true;
+							built.envelope.diagnostics.push(
+								diagnostic("step-cancelled", "Step execution was cancelled", {
+									source: descriptor.source,
+									recipe: descriptor.recipe,
+									step: descriptor.step,
+								}),
+							);
+							break;
+						}
+						descriptor.action.state = "error";
+						built.envelope.diagnostics.push(
+							diagnostic(
+								"step-error",
+								errorMessage(error),
+								{
+									source: descriptor.source,
+									recipe: descriptor.recipe,
+									step: descriptor.step,
+								},
+								descriptor.optional ? "warning" : "error",
+							),
+						);
+						if (!descriptor.optional) break;
+					}
+					continue;
 				}
 				if (
 					descriptor.type !== "custom" ||

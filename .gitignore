@@ -59,6 +59,10 @@ web_modules/
 # TypeScript cache
 *.tsbuildinfo
 
+# Compiled JavaScript generated from TypeScript
+/src/**/*.js
+/test/**/*.js
+
 # Optional npm cache directory
 .npm
 
