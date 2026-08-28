@@ -295,6 +295,17 @@ function extensionEffect(
 	};
 }
 
+function sameExtensionIdentity(
+	left: ExtensionStateEffect["extension"],
+	right: ExtensionStateEffect["extension"],
+): boolean {
+	return (
+		left.id === right.id &&
+		left.version === right.version &&
+		left.fingerprint === right.fingerprint
+	);
+}
+
 function sameEffect(
 	left: StateEffect | undefined,
 	right: StateEffect,
@@ -530,9 +541,17 @@ async function applyInstallPlan(
 					stepType: registered.type,
 				}),
 			) as Extract<StateEffect, { type: "extension" }> | undefined;
-			let previousState = existing?.state;
+			const matchingEffect =
+				existing !== undefined &&
+				sameExtensionIdentity(
+					existing.extension,
+					registered.definition.extension,
+				)
+					? existing
+					: undefined;
+			let previousState = matchingEffect?.state;
 			let includeState =
-				existing !== undefined && Object.hasOwn(existing, "state");
+				matchingEffect !== undefined && Object.hasOwn(matchingEffect, "state");
 			const persistEffect = async (): Promise<void> => {
 				const effect = extensionEffect(registered, previousState, includeState);
 				const key = stateKey(plan.consumerRoot, effect);
@@ -1120,11 +1139,7 @@ async function historicalExtension(
 			return unavailable(
 				`Historical Step type ${effect.stepType} is not registered`,
 			);
-		if (
-			definition.extension.id !== effect.extension.id ||
-			definition.extension.version !== effect.extension.version ||
-			definition.extension.fingerprint !== effect.extension.fingerprint
-		)
+		if (!sameExtensionIdentity(definition.extension, effect.extension))
 			return unavailable(
 				`Historical Step type ${effect.stepType} extension identity does not match`,
 			);

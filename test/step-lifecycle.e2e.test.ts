@@ -243,15 +243,19 @@ test("persists newer state returned by a Step check", async () => {
 	}
 });
 
-test("doctor does not pass state from a different extension identity", async () => {
+test("does not pass state from a different extension identity", async () => {
 	const type = "team.test.doctor-extension-identity";
 	const checkedStates: unknown[] = [];
+	const installedStates: unknown[] = [];
 	const registered = definition(type, () => ({
-		install: async () => ({
-			status: "ok",
-			changed: true,
-			state: { installed: true },
-		}),
+		install: async (_context, state) => {
+			installedStates.push(state);
+			return {
+				status: "ok",
+				changed: true,
+				state: { installed: true },
+			};
+		},
 		check: async (_context, state) => {
 			checkedStates.push(state);
 			return { status: "ok", changed: false };
@@ -272,6 +276,13 @@ test("doctor does not pass state from a different extension identity", async () 
 		const doctor = await runDoctor(join(fixture.root, "consumer"));
 		assert.equal(doctor.exitCode, 0);
 		assert.deepEqual(checkedStates, [{ installed: true }, undefined]);
+
+		const update = await runInstall(join(fixture.root, "consumer"), {
+			dryRun: false,
+			force: false,
+		});
+		assert.equal(update.exitCode, 0);
+		assert.deepEqual(installedStates, [undefined, undefined]);
 	} finally {
 		await fixture.cleanup();
 	}
