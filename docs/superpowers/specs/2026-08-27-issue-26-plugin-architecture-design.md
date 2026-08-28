@@ -402,9 +402,8 @@ type JsonStdioV1Request = {
       revision: SourceRevision
       content: {
         readOnly: true
-        representation: "virtual" | "materialized"
-        root?: string
-        entries?: Array<{
+        representation: "virtual"
+        entries: Array<{
           path: string
           kind: "file" | "directory"
           content?: string
@@ -446,10 +445,12 @@ type JsonStdioV1Response = {
 }
 ```
 
-`content` es la proyección serializable y de solo lectura de `SourceContent`:
-`representation: "materialized"` exige un `root` que sea una proyección
-temporal creada por el host, mientras `representation: "virtual"` exige
-`entries` con rutas relativas seguras. En la representación virtual, cada
+`content` es la proyección serializable y de solo lectura de `SourceContent`.
+En este protocolo out-of-process solo se permite `representation: "virtual"`
+con `entries`; la representación `materialized` queda restringida a código
+in-process confiable. Una futura proyección materializada out-of-process
+requeriría una sandbox con una frontera de sistema operativo explícita, por lo
+que no forma parte de este contrato. En la representación virtual, cada
 `entries[].path` debe ser una cadena no vacía en UTF-8 normalizado, usar `/` y
 no contener `NUL`, separadores inversos, segmentos vacíos, `.` o `..`. Se
 rechazan rutas absolutas, prefijos de unidad o URI y cualquier otra forma que
@@ -504,15 +505,18 @@ adapta los estados lógicos del lifecycle.
 Un futuro `Source provider` se registra por separado:
 
 ```ts
+type SourceCapabilityBroker = {
+  // El host liga este broker al ProviderCancellation de la invocación.
+  granted: readonly Capability[]
+  denied: readonly Capability[]
+  networkRequest(request: JsonValue): Promise<JsonValue>
+  credentialsRead(key: string): Promise<JsonValue>
+  stateRead(key: string): Promise<JsonValue>
+  stateWrite(key: string, value: JsonValue): Promise<void>
+}
+
 type SourceProviderContext = {
-  capabilities: {
-    granted: readonly Capability[]
-    denied: readonly Capability[]
-    networkRequest(request: JsonValue): Promise<JsonValue>
-    credentialsRead(key: string): Promise<JsonValue>
-    stateRead(key: string): Promise<JsonValue>
-    stateWrite(key: string, value: JsonValue): Promise<void>
-  }
+  capabilities: SourceCapabilityBroker
 }
 
 type ProviderCancellation = {
@@ -546,6 +550,7 @@ type SourceProviderDefinition = {
   ): Promise<SourceRevision>
 
   open(
+    identity: SourceIdentity,
     revision: SourceRevision,
     context: SourceProviderContext,
     cancellation: ProviderCancellation
@@ -554,18 +559,19 @@ type SourceProviderDefinition = {
 ```
 
 El host evalúa la política y crea el `SourceProviderContext` antes de invocar al
-provider. Los métodos del broker son la única frontera de servicio: cada llamada
-a `networkRequest`, `credentialsRead`, `stateRead` o `stateWrite` comprueba en
-el host la capacidad correspondiente y falla si no está concedida, aunque el
-provider intente omitir una comprobación previa. El provider no recibe los
-servicios subyacentes ni puede obtener red, credenciales o estado mediante
-acceso ambiental. `resolveRevision` y `open` reciben el `signal` y el
-`deadline` del host mediante `ProviderCancellation`; deben observar ambos,
-detener o asentarse pronto ante cancelación y no entregar resultados después
-de abortar. Si abren handles, deben cerrarlos también por la ruta de
-cancelación; `SourceHandle.close()` es idempotente y el host lo ejecuta en
-`finally`. El host conserva lifecycle, limpieza, rutas seguras, confianza,
-diagnósticos y uso por los Steps.
+provider. Para cada `resolveRevision` y `open`, entrega un broker ligado por el
+host al `ProviderCancellation` de esa invocación; el provider no puede cambiar
+ese enlace. Los métodos del broker son la única frontera de servicio: cada
+llamada a `networkRequest`, `credentialsRead`, `stateRead` o `stateWrite`
+comprueba en el host la capacidad correspondiente, el `signal` y el `deadline`
+antes y durante la operación, y falla si alguno no permite continuar. El
+provider no recibe los servicios subyacentes ni puede obtener red, credenciales
+o estado mediante acceso ambiental. `resolveRevision` y `open` deben observar
+la cancelación, detener o asentarse pronto y no entregar resultados después de
+abortar. Si abren handles, deben cerrarlos también por la ruta de cancelación;
+`SourceHandle.close()` es idempotente y el host lo ejecuta en `finally`. El host
+conserva lifecycle, limpieza, rutas seguras, confianza, diagnósticos y uso por
+los Steps.
 
 ```ts
 type SourceHandle = {
@@ -592,11 +598,18 @@ revisión, digest de esa representación y clave de confianza. Si la verificaci�
 falla, el Source no se puede reutilizar ni autorizar con esa huella.
 
 La identidad sigue siendo `provider + locator normalizado`; el selector no
-forma parte de la identidad y se resuelve como `Source revision`.
+forma parte de la identidad y se resuelve como `Source revision`. El host
+conserva la identidad producida por `normalizeIdentity` y la revisión producida
+por `resolveRevision`, las pasa como valores esperados a `open` y rechaza el
+`SourceHandle` si `identity` o `revision` no coinciden exactamente. La
+atestación firmada debe vincular esos mismos valores exactos, el digest del
+contenido y la clave de confianza; ninguna discrepancia puede alcanzar
+autorización, lockfile, deduplicación o caché.
 
 `SourceContent` es un filesystem virtual lógico, de solo lectura. Puede tener
-un árbol en memoria como backend inicial o proyectarse temporalmente a un
-filesystem real solo cuando un proceso out-of-process lo necesite.
+un árbol en memoria como backend inicial. La proyección a filesystem real queda
+limitada a código in-process confiable hasta que exista una sandbox explícita
+para procesos out-of-process.
 
 ### 4.9 Extension manifest futuro
 
@@ -714,8 +727,9 @@ y `cache prune`.
 - **AC-008:** Dado un `Source provider` futuro, cuando resuelve un selector,
   entonces devuelve identidad canónica, `Source revision`, huella candidata,
   `SourceContent` de solo lectura y limpieza explícita, las rutas virtuales
-  cumplen la gramática segura y el host verifica la huella canónica antes de
-  usarla como clave.
+  cumplen la gramática segura, `SourceHandle.identity`/`revision` coinciden con
+  los valores esperados y el host verifica la huella canónica antes de usarla
+  como clave.
 - **AC-009:** Dado un manifiesto de extensión futuro, cuando su API o política
   no es compatible, entonces el host lo rechaza antes de activar su código.
 - **AC-010:** Dado que tbboot sigue por debajo de `1.0`, cuando se introducen
@@ -730,12 +744,13 @@ y `cache prune`.
   cuando el host lo invoca, entonces recibe un contexto explícito cuyos métodos
   de broker comprueban la capacidad en cada llamada, no puede usar una
   capacidad denegada ni acceso ambiental, y `resolveRevision`/`open` observan
-  la cancelación y el deadline del host.
+  la cancelación y el deadline del host, incluidos los broker calls de esa
+  invocación.
 - **AC-014:** Dado un Step out-of-process, cuando el runtime intercambia su
   petición y respuesta, entonces usa `json-stdio-v1`, el host valida ambos
   payloads, exige exit code `0`, aplica la matriz explícita de `state` y
-  mantiene bajo su control lifecycle, timeout, cancelación y errores de
-  transporte.
+  usa solo contenido virtual con rutas validadas y mantiene bajo su control
+  lifecycle, timeout, cancelación y errores de transporte.
 
 ## 6. Test Automation Strategy
 
@@ -957,6 +972,8 @@ condiciones:
   gramática de rutas y huella canónica verificable;
 - el broker de capacidades aplica la política en cada llamada y la cancelación
   alcanza las operaciones de resolución, apertura y cleanup;
+- la representación materializada no cruza la frontera out-of-process sin una
+  sandbox explícita, y el host valida identidad y revisión antes de confiar;
 - la activación futura de extensiones es explícita y previa a la ejecución;
 - el prototipo queda diferido y condicionado a una pregunta técnica real;
 - no se requieren cambios en `src/`, `schemas/` ni en la implementación
