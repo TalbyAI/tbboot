@@ -4,8 +4,9 @@
 	"type": "module",
 	"scripts": {
 		"implement": "node src/cli.ts",
+		"fixture": "node src/cli.ts --fixture --dry-run",
 		"test": "node --test test/**/*.test.ts",
-		"check": "node --check src/cli.ts"
+		"check": "node --check src/agents.ts && node --check src/cli.ts && node --check src/fixture.ts && node --check src/git.ts && node --check src/host.ts && node --check src/preflight.ts && node --check src/report.ts && node --check src/types.ts && node --check src/workflow.ts"
 	},
 	"dependencies": {
 		"@flue/runtime": "^2.0.3"
