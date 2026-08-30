@@ -6,6 +6,7 @@ import type { WorkflowGit } from "./workflow.ts";
 import type { Issue, CommandResult, GitRunner } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
+type GhRunner = (args: string[], cwd: string) => Promise<CommandResult>;
 
 export function createGitHost(repoRoot: string): WorkflowGit {
 	const runner: GitRunner = { run: (args, cwd = repoRoot) => runGit(args, cwd) };
@@ -44,27 +45,30 @@ export async function runCommand(command: string, args: string[], cwd: string): 
 	}
 }
 
-export async function loadIssue(repoRoot: string, number: number): Promise<Issue> {
-	const result = await runGh(
-		["issue", "view", String(number), "--json", "number,state,title,body,labels,blockedBy,url"],
-		repoRoot,
-	);
+export async function loadIssue(repoRoot: string, number: number, gh: GhRunner = runGh): Promise<Issue> {
+	const [result, dependencies] = await Promise.all([
+		gh(["issue", "view", String(number), "--json", "number,state,title,body,labels,url"], repoRoot),
+		gh(["api", `repos/{owner}/{repo}/issues/${number}/dependencies/blocked_by`], repoRoot),
+	]);
 	const raw = JSON.parse(result.stdout) as {
 		number: number;
 		state: Issue["state"];
 		title: string;
 		body: string;
 		labels?: Array<string | { name: string }>;
-		blockedBy?: Array<{ number: number; state: Issue["state"] }>;
 		url: string;
 	};
+	const blockedBy = JSON.parse(dependencies.stdout) as Array<{ number: number; state: string }>;
 	return {
 		number: raw.number,
 		state: raw.state,
 		title: raw.title,
 		body: raw.body,
 		labels: (raw.labels ?? []).map((label) => typeof label === "string" ? label : label.name),
-		blockedBy: raw.blockedBy ?? [],
+		blockedBy: blockedBy.map((blocker) => ({
+			number: blocker.number,
+			state: blocker.state.toUpperCase() as Issue["state"],
+		})),
 		url: raw.url,
 	};
 }

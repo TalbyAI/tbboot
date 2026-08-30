@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorktree } from "../src/git.ts";
+import { loadIssue } from "../src/host.ts";
 import { preflight } from "../src/preflight.ts";
 import { runWorkflow, type WorkflowOptions } from "../src/workflow.ts";
 import { runCli } from "../src/cli.ts";
@@ -59,6 +60,32 @@ test("the checked-in fixture describes the ready Issue 65 scenario", async () =>
 	assert.equal(issue.state, "OPEN");
 	assert.ok(issue.labels.includes("ready-for-agent"));
 	assert.deepEqual(issue.blockedBy, []);
+});
+
+test("loadIssue reads blockers through the GitHub dependencies API", async () => {
+	const calls: string[][] = [];
+	const result = await loadIssue("repo-root", 65, async (args) => {
+		calls.push([...args]);
+		return {
+			stdout: args[0] === "issue"
+				? JSON.stringify({
+					number: 65,
+					state: "OPEN",
+					title: "Issue 65",
+					body: "body",
+					labels: [{ name: "ready-for-agent" }],
+					url: "https://github.com/TalbyAI/tbboot/issues/65",
+				})
+				: JSON.stringify([{ number: 64, state: "closed" }]),
+			stderr: "",
+			exitCode: 0,
+		};
+	});
+	assert.deepEqual(result.blockedBy, [{ number: 64, state: "CLOSED" }]);
+	assert.deepEqual(calls, [
+		["issue", "view", "65", "--json", "number,state,title,body,labels,url"],
+		["api", "repos/{owner}/{repo}/issues/65/dependencies/blocked_by"],
+	]);
 });
 
 test("preflight reports every blocking reason", () => {
