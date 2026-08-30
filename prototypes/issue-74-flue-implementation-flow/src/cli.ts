@@ -1,7 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
+import { loadEnvFile, stdin as input, stdout as output } from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { createLiveAgentRunner } from "./agents.ts";
 import { createFixtureOptions, readIssue65Fixture } from "./fixture.ts";
@@ -13,6 +14,7 @@ const prototypeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(prototypeRoot, "..", "..");
 
 export type CliResult = { exitCode: number; stdout: string };
+export type RunCliOptions = { envFile?: string };
 
 type Flags = {
 	issue?: number;
@@ -22,7 +24,8 @@ type Flags = {
 	output?: string;
 };
 
-export async function runCli(args: string[]): Promise<CliResult> {
+export async function runCli(args: string[], options: RunCliOptions = {}): Promise<CliResult> {
+	loadPrototypeEnv(options.envFile);
 	const flags = parseArgs(args);
 	if (flags.fixture || flags.dryRun) {
 		const issue = await readIssue65Fixture();
@@ -66,6 +69,10 @@ export async function runCli(args: string[]): Promise<CliResult> {
 	});
 	if (result.status === "ready-for-review") await rm(worktreeDir, { recursive: true, force: true });
 	return { exitCode: result.status === "ready-for-review" ? 0 : 2, stdout: `${JSON.stringify(result, null, 2)}\n` };
+}
+
+export function loadPrototypeEnv(envFile = resolve(prototypeRoot, ".env")): void {
+	if (existsSync(envFile)) loadEnvFile(envFile);
 }
 
 async function runChecks(cwd: string) {

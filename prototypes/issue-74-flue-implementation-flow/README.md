@@ -20,9 +20,14 @@ Genera los informes bajo `runs/`, que está ignorado por Git.
 ## Ejecución local con Flue
 
 ```powershell
-$env:OPENROUTER_API_KEY = "..."
+Copy-Item .env.example .env
+# Edita .env y sustituye el placeholder por tu clave real.
 node src/cli.ts --issue 65
 ```
+
+El archivo `.env` se coloca junto a `package.json`, queda ignorado por Git y
+se carga automáticamente al lanzar `src/cli.ts` mediante `loadEnvFile`. Una
+variable `OPENROUTER_API_KEY` ya presente en el entorno tiene prioridad.
 
 El host obtiene el Issue con `gh`, hace preflight sobre el checkout base,
 crea worktrees temporales y ejecuta Implementer, Verifier y Reviewer mediante

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -235,7 +235,32 @@ test("fixture dry-run does not require provider credentials", async () => {
 
 test("README documents the required safety and execution boundaries", async () => {
 	const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-	for (const term of ["OPENROUTER_API_KEY", "xhigh", "local()", "not a security", "--fixture", "--dry-run", "--issue 65", "--publish"]) {
+	for (const term of ["OPENROUTER_API_KEY", "xhigh", "local()", "not a security", "--fixture", "--dry-run", "--issue 65", "--publish", ".env.example", "Copy-Item", "loadEnvFile"]) {
 		assert.match(readme, new RegExp(term.replace(/[()]/g, "\\$&")));
 	}
+});
+
+test("the environment example documents the OpenRouter key", async () => {
+	const example = await readFile(new URL("../.env.example", import.meta.url), "utf8");
+	assert.match(example, /^OPENROUTER_API_KEY=replace-with-your-openrouter-key$/m);
+	assert.match(await readFile(new URL("../.gitignore", import.meta.url), "utf8"), /^\.env$/m);
+});
+
+test("launch loads OPENROUTER_API_KEY from its env file before fixture execution", async () => {
+	await withOutput(async (outputDir) => {
+		const envDir = await mkdtemp(join(tmpdir(), "tbboot-issue-74-env-"));
+		const envFile = join(envDir, ".env");
+		const previous = process.env.OPENROUTER_API_KEY;
+		delete process.env.OPENROUTER_API_KEY;
+		try {
+			await writeFile(envFile, "OPENROUTER_API_KEY=fixture-openrouter-key\n", "utf8");
+			const result = await runCli(["--fixture", "--dry-run", "--output", outputDir], { envFile });
+			assert.equal(result.exitCode, 0);
+			assert.equal(process.env.OPENROUTER_API_KEY, "fixture-openrouter-key");
+		} finally {
+			if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+			else process.env.OPENROUTER_API_KEY = previous;
+			await rm(envDir, { recursive: true, force: true });
+		}
+	});
 });
