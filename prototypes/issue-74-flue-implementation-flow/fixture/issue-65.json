@@ -1,0 +1,9 @@
+{
+	"number": 65,
+	"state": "OPEN",
+	"title": "Built-ins mediante el registro sin regresión del MVP",
+	"body": "Los built-ins File, File Fragment y Custom se registran como definiciones estáticas.",
+	"labels": ["ready-for-agent"],
+	"blockedBy": [],
+	"url": "https://github.com/TalbyAI/tbboot/issues/65"
+}

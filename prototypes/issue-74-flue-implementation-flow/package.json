@@ -1,0 +1,13 @@
+{
+	"name": "tbboot-issue-74-flue-implementation-flow",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"implement": "node src/cli.ts",
+		"test": "node --test test/**/*.test.ts",
+		"check": "node --check src/cli.ts"
+	},
+	"dependencies": {
+		"@flue/runtime": "^2.0.3"
+	}
+}
